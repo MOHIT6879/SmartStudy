@@ -6,6 +6,7 @@ import { supabase, uploadImageToSupabase } from './db/supabase.js';
 import { performOcr } from './services/ocrService.js';
 import { generateRagQuestions, ingestPdfDocument, evaluateStudentAnswerAgainstPdf } from './services/ragService.js';
 import { uploadDisk, uploadsDir } from './middleware/upload.js';
+import { createBatchJob, getBatchJob } from './services/batchService.js';
 
 dotenv.config();
 
@@ -257,6 +258,72 @@ app.post('/api/submissions', uploadDisk.array('submission', 5), async (req, res)
   } catch (err: any) {
 
     console.error('Submission Error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 6b. Bulk Submit Assignments (50 to 100 Papers Batch Processing)
+app.post('/api/submissions/bulk', uploadDisk.array('submissions', 100), async (req, res) => {
+  try {
+    const { assignmentId, selectedLanguage, className, subject } = req.body;
+    const files = (req.files as Express.Multer.File[]) || [];
+
+    if (files.length === 0) {
+      return res.status(400).json({ success: false, message: 'No student answer sheet files uploaded.' });
+    }
+
+    const batchFiles = files.map((f) => ({
+      buffer: f.buffer,
+      originalname: f.originalname || 'submission.jpg',
+      mimetype: f.mimetype || 'image/jpeg'
+    }));
+
+    const batchJob = createBatchJob(
+      batchFiles,
+      assignmentId,
+      selectedLanguage || 'English',
+      className,
+      subject
+    );
+
+    res.json({
+      success: true,
+      jobId: batchJob.id,
+      total: batchJob.total,
+      status: batchJob.status,
+      message: `Successfully initiated batch evaluation for ${batchJob.total} student sheets.`
+    });
+  } catch (err: any) {
+    console.error('Bulk Submission Endpoint Error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 6c. Get Batch Evaluation Job Status & Progress
+app.get('/api/submissions/batch/:jobId', (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const job = getBatchJob(jobId);
+
+    if (!job) {
+      return res.status(404).json({ success: false, message: `Batch job '${jobId}' not found.` });
+    }
+
+    res.json({
+      success: true,
+      jobId: job.id,
+      status: job.status,
+      total: job.total,
+      processed: job.processed,
+      successful: job.successful,
+      failed: job.failed,
+      progressPercent: Math.round((job.processed / job.total) * 100),
+      submissions: job.submissions,
+      errors: job.errors,
+      updatedAt: job.updatedAt
+    });
+  } catch (err: any) {
+    console.error('Batch Job Status Error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });

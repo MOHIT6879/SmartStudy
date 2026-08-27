@@ -243,7 +243,7 @@ Return ONLY a valid JSON object with NO markdown formatting or surrounding text 
   "feedback": "Teacher assessment summary...",
   "socraticHint": "Socratic question here..."
 }`;
-    // 1. Try Direct Google Gemini API first (1,500 FREE Requests per Day - 0 Cost, No Credit Card)
+    // 1. Primary Direct Google Gemini API Evaluation (1,500 FREE Requests/Day)
     const directGeminiText = await callGeminiDirectApi(systemPrompt, imageBuffer, mimeType);
     if (directGeminiText) {
         const parsed = cleanAndParseJson(directGeminiText);
@@ -258,77 +258,30 @@ Return ONLY a valid JSON object with NO markdown formatting or surrounding text 
             };
         }
     }
-    let imageContent = null;
-    if (imageBuffer && imageBuffer.length > 0) {
-        const base64Image = imageBuffer.toString('base64');
-        const dataUrl = `data:${mimeType};base64,${base64Image}`;
-        imageContent = {
-            type: 'image_url',
-            image_url: { url: dataUrl }
-        };
-    }
-    const userMessageContent = [{ type: 'text', text: systemPrompt }];
-    if (imageContent) {
-        userMessageContent.push(imageContent);
-    }
-    // Try each model until one succeeds
-    for (const model of candidateModels) {
-        try {
-            console.log(`🤖 Requesting Vision OCR & Evaluation from OpenRouter model (${model})...`);
-            const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                    'HTTP-Referer': 'http://localhost:3001',
-                    'X-Title': 'SmartStudy AI Platform'
-                },
-                body: JSON.stringify({
-                    model: model,
-                    messages: [{ role: 'user', content: userMessageContent }],
-                    temperature: 0.2
-                })
-            });
-            if (res.ok) {
-                const data = await res.json();
-                const content = data?.choices?.[0]?.message?.content || '';
-                console.log(`✅ Successful response from Vision model (${model}).`);
-                const jsonMatch = content.match(/\{[\s\S]*\}/);
-                if (jsonMatch) {
-                    const parsed = JSON.parse(jsonMatch[0]);
-                    return {
-                        ocrText: parsed.ocrText || fallbackResult.ocrText,
-                        score: typeof parsed.score === 'number' ? parsed.score : fallbackResult.score,
-                        excelledAreas: Array.isArray(parsed.excelledAreas) ? parsed.excelledAreas : fallbackResult.excelledAreas,
-                        knowledgeGaps: Array.isArray(parsed.knowledgeGaps) ? parsed.knowledgeGaps : fallbackResult.knowledgeGaps,
-                        feedback: parsed.feedback || fallbackResult.feedback,
-                        socraticHint: parsed.socraticHint || fallbackResult.socraticHint
-                    };
-                }
-            }
-            else {
-                const errBody = await res.text();
-                console.warn(`⚠️ OpenRouter Vision API notice for ${model} (${res.status}): ${errBody.substring(0, 150)}`);
-                // If 429 (rate-limited), continue to next model in loop
-            }
-        }
-        catch (err) {
-            console.warn(`⚠️ Error attempting Vision model ${model}:`, err);
+    // 2. Retry Direct Gemini API once more if initial call returned null or was temporary rate limit
+    console.warn('⚠️ Retrying Direct Google Gemini API for paper analysis...');
+    await new Promise(res => setTimeout(res, 2000));
+    const retryGeminiText = await callGeminiDirectApi(systemPrompt, imageBuffer, mimeType);
+    if (retryGeminiText) {
+        const parsed = cleanAndParseJson(retryGeminiText);
+        if (parsed) {
+            return {
+                ocrText: parsed.ocrText || fallbackResult.ocrText,
+                score: typeof parsed.score === 'number' ? parsed.score : fallbackResult.score,
+                excelledAreas: Array.isArray(parsed.excelledAreas) ? parsed.excelledAreas : fallbackResult.excelledAreas,
+                knowledgeGaps: Array.isArray(parsed.knowledgeGaps) ? parsed.knowledgeGaps : fallbackResult.knowledgeGaps,
+                feedback: parsed.feedback || fallbackResult.feedback,
+                socraticHint: parsed.socraticHint || fallbackResult.socraticHint
+            };
         }
     }
-    console.warn('⚠️ All Vision models busy or rate-limited. Returning clean baseline analysis.');
+    console.warn('⚠️ Direct Gemini API busy or rate-limited. Returning clean baseline analysis.');
     return fallbackResult;
 }
 /**
- * 3. Generate Question Pool from Uploaded Textbook Text via OpenRouter LLM
+ * 3. Generate Question Pool from Uploaded Textbook Text via Direct Google Gemini API
  */
 export async function generateQuestionsFromTextbook(topic, className, textbookContent, subTopicScope) {
-    const apiKey = getApiKey();
-    const candidateModels = Array.from(new Set([
-        'nvidia/nemotron-3-ultra-550b-a55b:free',
-        'z-ai/glm-5.2:free',
-        'openrouter/free'
-    ]));
     const fallbackQuestions = [
         { id: 'q1', text: `Explain the core concepts of ${topic} for ${className}.`, correctAnswer: `Standard textbook definition of ${topic}.` },
         { id: 'q2', text: `List 2 key functions or examples related to ${topic}.`, correctAnswer: `Key functions and real-world examples from ${topic}.` },
@@ -350,7 +303,7 @@ Return ONLY a valid JSON array of objects matching this exact structure:
   { "id": "q2", "text": "Question 2 text...", "correctAnswer": "Answer benchmark key..." },
   { "id": "q3", "text": "Question 3 text...", "correctAnswer": "Answer benchmark key..." }
 ]`;
-    // 1. Try Direct Google Gemini API first (1,500 FREE Requests per Day - 0 Cost, No Credit Card)
+    // 1. Direct Google Gemini API call
     const directGeminiText = await callGeminiDirectApi(prompt);
     if (directGeminiText) {
         const jsonMatch = directGeminiText.match(/\[[\s\S]*\]/);
@@ -359,7 +312,7 @@ Return ONLY a valid JSON array of objects matching this exact structure:
                 const questions = JSON.parse(jsonMatch[0]);
                 if (Array.isArray(questions) && questions.length > 0) {
                     console.log(`\n===============================================================`);
-                    console.log(`🎯 [QUESTION POOL GENERATOR] SUCCESS via Google Gemini Direct API!`);
+                    console.log(`🎯 [QUESTION POOL GENERATOR] SUCCESS via Direct Google Gemini API!`);
                     console.log(`===============================================================\n`);
                     return questions;
                 }
@@ -369,55 +322,5 @@ Return ONLY a valid JSON array of objects matching this exact structure:
             }
         }
     }
-    if (!apiKey || apiKey.includes('your_openrouter_api_key')) {
-        return fallbackQuestions;
-    }
-    for (const model of candidateModels) {
-        try {
-            console.log(`🤖 Generating curriculum questions using OpenRouter LLM (${model})...`);
-            const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                    'HTTP-Referer': 'http://localhost:3001',
-                    'X-Title': 'SmartStudy AI Platform'
-                },
-                body: JSON.stringify({
-                    model: model,
-                    messages: [{ role: 'user', content: prompt }],
-                    temperature: 0.3
-                })
-            });
-            if (res.ok) {
-                const data = await res.json();
-                const content = data?.choices?.[0]?.message?.content || '';
-                const jsonMatch = content.match(/\[[\s\S]*\]/);
-                if (jsonMatch) {
-                    const questions = JSON.parse(jsonMatch[0]);
-                    if (Array.isArray(questions) && questions.length > 0) {
-                        console.log(`\n===============================================================`);
-                        console.log(`🎯 [QUESTION POOL GENERATOR] SUCCESS!`);
-                        console.log(`🤖 LLM MODEL USED FOR GENERATION: ${model}`);
-                        console.log(`===============================================================\n`);
-                        return questions;
-                    }
-                }
-                else {
-                    console.warn(`⚠️ Model (${model}) output did not match JSON array format. Content snippet: ${content.substring(0, 120)}`);
-                }
-            }
-            else {
-                const errBody = await res.text();
-                console.warn(`⚠️ OpenRouter Question API notice for ${model} (${res.status}): ${errBody.substring(0, 150)}`);
-            }
-        }
-        catch (err) {
-            console.warn(`⚠️ Error generating questions via model ${model}:`, err);
-        }
-    }
-    console.log(`\n===============================================================`);
-    console.log(`🎯 [QUESTION POOL GENERATOR] USING CURRICULUM BACKUP POOL`);
-    console.log(`===============================================================\n`);
     return fallbackQuestions;
 }

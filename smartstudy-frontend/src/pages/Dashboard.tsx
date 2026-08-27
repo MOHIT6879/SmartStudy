@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import SubmissionReviewModal from '../components/SubmissionReviewModal';
+import BulkEvaluationModal from '../components/BulkEvaluationModal';
 import { API_BASE_URL } from '../config/api';
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
 
   const [questions, setQuestions] = useState<any[]>([]);
   const [className, setClassName] = useState('Grade 5 General Science');
@@ -139,6 +141,13 @@ export default function Dashboard() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <button
+            className="btn btn-primary"
+            style={{ fontSize: '0.85rem', padding: '0.45rem 0.9rem', fontWeight: 600 }}
+            onClick={() => setIsBulkModalOpen(true)}
+          >
+            🚀 Bulk Upload (50-100 Papers)
+          </button>
           <span className="badge badge-primary" style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}>
             🏫 Class: Grade 5 Section A
           </span>
@@ -397,6 +406,12 @@ export default function Dashboard() {
           onApprove={handleApprove}
         />
       )}
+
+      <BulkEvaluationModal
+        isOpen={isBulkModalOpen}
+        onClose={() => setIsBulkModalOpen(false)}
+        onRefreshDashboard={fetchSubmissions}
+      />
 
       <style>{`
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }

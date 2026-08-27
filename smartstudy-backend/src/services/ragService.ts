@@ -130,8 +130,16 @@ export async function generateRagQuestions(
 }
 
 
+export const MODEL_THRESHOLDS = {
+  VECTOR_MATCH_THRESHOLD: parseFloat(process.env.VECTOR_MATCH_THRESHOLD || '0.30'),
+  VECTOR_MATCH_COUNT: parseInt(process.env.VECTOR_MATCH_COUNT || '5', 10),
+  MIN_OCR_LENGTH: parseInt(process.env.MIN_OCR_LENGTH || '15', 10),
+  SCORE_AUTO_APPROVE: parseInt(process.env.SCORE_AUTO_APPROVE || '90', 10),
+  SCORE_ATTENTION_REQUIRED: parseInt(process.env.SCORE_ATTENTION_REQUIRED || '50', 10)
+};
+
 /**
- * 3. Vision LLM & Vector RAG Student Answer Evaluation
+ * 3. Direct Google Gemini Vision LLM & Vector RAG Student Answer Evaluation
  */
 export async function evaluateStudentAnswerAgainstPdf(
   ocrText: string,
@@ -148,11 +156,11 @@ export async function evaluateStudentAnswerAgainstPdf(
       // Generate 1536-dimensional vector embedding for the student OCR text / query
       const queryEmbedding = await generateEmbedding(ocrText || className);
 
-      // Perform Cosine Similarity Vector Search in Supabase pgvector
+      // Perform Cosine Similarity Vector Search in Supabase pgvector using configured threshold
       const { data: vectorMatchData, error: rpcError } = await supabase.rpc('match_textbook_chunks', {
         query_embedding: queryEmbedding,
-        match_threshold: 0.3,
-        match_count: 5,
+        match_threshold: MODEL_THRESHOLDS.VECTOR_MATCH_THRESHOLD,
+        match_count: MODEL_THRESHOLDS.VECTOR_MATCH_COUNT,
         filter_class_name: className
       });
 
