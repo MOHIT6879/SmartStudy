@@ -318,33 +318,75 @@ export default function VerificationPage() {
                     📖 Dispatched Assignment Questions & Benchmark Rubric Key ({assignedQuestions.length > 0 ? `${assignedQuestions.length} Questions` : 'Curriculum Standard'})
                   </span>
                   {assignedQuestions.length > 0 ? (
-                    <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                       {assignedQuestions.map((q: any, idx: number) => {
-                        let matchedStudentText = '';
-                        if (idx === 0) matchedStudentText = 'ఈ - ీ (Section II, Line 4)';
-                        else if (idx === 1) matchedStudentText = 'త థ ద ధ న (Section I, Line 4)';
-                        else if (idx === 2) matchedStudentText = 'వో వో వౌ (Section III, Line 1)';
+                        const fullOcr = submission.aiEvaluation?.ocrText || '';
+                        const qEvals = submission.aiEvaluation?.questionEvaluations || [];
+                        const qEval = qEvals[idx] || qEvals.find((e: any) => e.questionNo === `Q${idx + 1}` || e.questionText === q.text);
+
+                        const scorePercent = typeof qEval?.scorePercent === 'number' ? qEval.scorePercent : 0;
+                        const status = qEval?.status || (scorePercent >= 90 ? 'Full Credit' : (scorePercent > 0 ? 'Partial Credit' : 'Unrelated / No Credit'));
+                        const reasoning = qEval?.reasoning || (scorePercent === 0 ? 'Student wrote answers for an unrelated question topic.' : 'Partial concepts addressed.');
+
+                        const matchedStudentText = qEval?.studentAnswerSnippet || '';
+
+                        const badgeColor = scorePercent >= 90 ? { bg: '#D1FAE5', text: '#065F46' }
+                          : scorePercent > 0 ? { bg: '#FEF3C7', text: '#92400E' }
+                          : { bg: '#FEE2E2', text: '#991B1B' };
 
                         return (
-                          <div key={idx} style={{ background: 'white', border: '1px solid #C7D2FE', padding: '0.5rem 0.75rem', borderRadius: '0.375rem' }}>
-                            <p style={{ margin: 0, color: '#1E1B4B', fontWeight: 600, fontSize: '0.85rem' }}>
-                              Q{idx + 1}: {q.text}
-                            </p>
-                            <div style={{ display: 'flex', gap: '1rem', marginTop: '0.25rem', flexWrap: 'wrap' }}>
-                              {q.correctAnswer && (
-                                <p style={{ margin: 0, color: '#059669', fontSize: '0.8rem', fontWeight: 500 }}>
-                                  🎯 Benchmark Key: {q.correctAnswer}
+                          <div key={idx} style={{ background: 'white', border: '1px solid #C7D2FE', padding: '0.75rem', borderRadius: '0.5rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                              <p style={{ margin: 0, color: '#1E1B4B', fontWeight: 600, fontSize: '0.875rem', flex: 1 }}>
+                                Q{idx + 1}: {q.text}
+                              </p>
+                              <span style={{
+                                background: badgeColor.bg,
+                                color: badgeColor.text,
+                                padding: '0.2rem 0.5rem',
+                                borderRadius: '0.25rem',
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                whiteSpace: 'nowrap'
+                              }}>
+                                {scorePercent}% - {status}
+                              </span>
+                            </div>
+
+                            {q.correctAnswer && (
+                              <div style={{ background: '#ECFDF5', borderLeft: '4px solid #10B981', padding: '0.5rem 0.75rem', marginTop: '0.5rem', borderRadius: '0.25rem' }}>
+                                <span style={{ fontSize: '0.75rem', color: '#047857', fontWeight: 700, textTransform: 'uppercase', display: 'block', marginBottom: '0.2rem' }}>
+                                  🎯 Benchmark Reference Key (Textbook Ground Truth)
+                                </span>
+                                <p style={{ margin: 0, color: '#065F46', fontSize: '0.825rem', lineHeight: 1.5 }}>
+                                  {q.correctAnswer}
                                 </p>
-                              )}
-                              <p style={{ margin: 0, color: '#4F46E5', fontSize: '0.8rem', fontWeight: 500 }}>
-                                ✍️ Paper OCR Match: {matchedStudentText || 'Found in scanned copy'}
+                              </div>
+                            )}
+
+                            <div style={{ background: '#EEF2FF', borderLeft: '4px solid #4F46E5', padding: '0.5rem 0.75rem', marginTop: '0.5rem', borderRadius: '0.25rem' }}>
+                              <span style={{ fontSize: '0.75rem', color: '#4338CA', fontWeight: 700, textTransform: 'uppercase', display: 'block', marginBottom: '0.2rem' }}>
+                                ✍️ Student's Answer from Scanned Paper
+                              </span>
+                              <p style={{ margin: 0, color: '#3730A3', fontSize: '0.825rem', lineHeight: 1.5 }}>
+                                {matchedStudentText || (fullOcr ? fullOcr.substring(0, 150) + '...' : 'Transcribed from handwritten paper scan')}
                               </p>
                             </div>
+
+                            {scorePercent < 90 && reasoning && (
+                              <div style={{ background: '#FFFBEB', borderLeft: '4px solid #F59E0B', padding: '0.5rem 0.75rem', marginTop: '0.5rem', borderRadius: '0.25rem' }}>
+                                <span style={{ fontSize: '0.75rem', color: '#D97706', fontWeight: 700, textTransform: 'uppercase', display: 'block', marginBottom: '0.2rem' }}>
+                                  ⚠️ Examiner Evaluation Note
+                                </span>
+                                <p style={{ margin: 0, color: '#92400E', fontSize: '0.825rem', lineHeight: 1.5 }}>
+                                  {reasoning}
+                                </p>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
                     </div>
-
                   ) : (
                     <p style={{ margin: '0.3rem 0 0 0', color: '#3730A3', fontSize: '0.875rem', whiteSpace: 'pre-line', lineHeight: 1.6 }}>
                       {langName.includes('Telugu')

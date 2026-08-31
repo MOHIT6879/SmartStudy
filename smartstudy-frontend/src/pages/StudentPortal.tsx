@@ -4,7 +4,7 @@ import { API_BASE_URL } from '../config/api';
 export default function StudentPortal() {
   const [files, setFiles] = useState<File[]>([]);
   const [selectedLanguage, setSelectedLanguage] = useState('English');
-  const [studentName, setStudentName] = useState('Aarav Sharma');
+  const [studentName, setStudentName] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [assignments, setAssignments] = useState<any[]>([]);
@@ -179,16 +179,20 @@ export default function StudentPortal() {
             <>
               <div className="input-group">
                 <label className="input-label">Student Name</label>
-                <select 
+                <input 
                   className="input-field"
+                  type="text"
+                  placeholder="e.g. Aarav Sharma"
                   value={studentName}
                   onChange={(e) => setStudentName(e.target.value)}
-                >
-                  <option value="Aarav Sharma">Aarav Sharma</option>
-                  <option value="S. Hanish">S. Hanish</option>
-                  <option value="Y. Manaswini">Y. Manaswini</option>
-                  <option value="Alex Johnson">Alex Johnson</option>
-                </select>
+                  list="student-names-list"
+                />
+                <datalist id="student-names-list">
+                  <option value="Aarav Sharma" />
+                  <option value="S. Hanish" />
+                  <option value="Y. Manaswini" />
+                  <option value="Alex Johnson" />
+                </datalist>
               </div>
 
               <div className="input-group">

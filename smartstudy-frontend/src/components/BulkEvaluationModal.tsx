@@ -8,10 +8,10 @@ interface BulkEvaluationModalProps {
 }
 
 export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboard }: BulkEvaluationModalProps) {
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [className, setClassName] = useState('Grade 5 General Science');
+  const [className, setClassName] = useState('');
   const [selectedLanguage, setSelectedLanguage] = useState('English');
-  const [assignmentTitle, setAssignmentTitle] = useState('Chapter Assessment');
+  const [assignmentTitle, setAssignmentTitle] = useState('');
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -160,16 +160,13 @@ export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboar
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#334155', marginBottom: '0.35rem' }}>Target Class Name</label>
-                <select
+                <input
+                  type="text"
                   value={className}
                   onChange={(e) => setClassName(e.target.value)}
+                  placeholder="e.g. Grade 11 Psychology"
                   style={{ width: '100%', padding: '0.6rem', borderRadius: '0.5rem', border: '1px solid #CBD5E1', fontSize: '0.85rem' }}
-                >
-                  <option value="Grade 5 General Science">Grade 5 General Science</option>
-                  <option value="Grade 3 Telugu (తెలుగు)">Grade 3 Telugu (తెలుగు)</option>
-                  <option value="Grade 4 Social Studies">Grade 4 Social Studies</option>
-                  <option value="Grade 6 Physics">Grade 6 Physics</option>
-                </select>
+                />
               </div>
 
               <div>
@@ -192,7 +189,7 @@ export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboar
                 type="text"
                 value={assignmentTitle}
                 onChange={(e) => setAssignmentTitle(e.target.value)}
-                placeholder="e.g. Plant Reproduction Assessment"
+                placeholder="e.g. Chapter Assessment"
                 style={{ width: '100%', padding: '0.6rem', borderRadius: '0.5rem', border: '1px solid #CBD5E1', fontSize: '0.85rem' }}
               />
             </div>
@@ -212,16 +209,16 @@ export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboar
             >
               <span style={{ fontSize: '2.5rem' }}>📁</span>
               <h3 style={{ margin: '0.5rem 0 0.25rem 0', fontSize: '1rem', color: '#4338CA' }}>
-                {selectedFiles.length > 0 ? `${selectedFiles.length} Student Papers Selected` : 'Click or Drag & Drop Student Sheets'}
+                {selectedFiles.length > 0 ? `${selectedFiles.length} File(s) / Bundles Selected` : 'Click or Drag & Drop Student Sheets'}
               </h3>
               <p style={{ margin: 0, fontSize: '0.8rem', color: '#6366F1' }}>
-                Select up to 100 JPG, PNG, WEBP files at once (50-100 batch sheets)
+                Support ZIP archives (with student folders), single/multiple PDFs, or images (JPG, PNG, WEBP)
               </p>
               <input
                 id="bulk-file-input"
                 type="file"
                 multiple
-                accept="image/*,.pdf"
+                accept="image/*,.pdf,.zip,application/zip,application/x-zip-compressed"
                 onChange={handleFileSelect}
                 style={{ display: 'none' }}
               />
@@ -229,13 +226,18 @@ export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboar
 
             {selectedFiles.length > 0 && (
               <div style={{ maxHeight: '120px', overflowY: 'auto', marginBottom: '1.5rem', padding: '0.5rem', background: '#F8FAFC', borderRadius: '0.5rem', border: '1px solid #E2E8F0' }}>
-                <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B' }}>Selected Papers:</span>
+                <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B' }}>Selected Files & Archives:</span>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', marginTop: '0.35rem' }}>
-                  {selectedFiles.slice(0, 15).map((f, i) => (
-                    <span key={i} style={{ background: '#E0E7FF', color: '#3730A3', padding: '0.15rem 0.5rem', borderRadius: '0.25rem', fontSize: '0.7rem' }}>
-                      {f.name}
-                    </span>
-                  ))}
+                  {selectedFiles.slice(0, 15).map((f, i) => {
+                    const isZip = f.name.toLowerCase().endsWith('.zip');
+                    const isPdf = f.name.toLowerCase().endsWith('.pdf');
+                    const icon = isZip ? '📦' : isPdf ? '📄' : '🖼️';
+                    return (
+                      <span key={i} style={{ background: isZip ? '#FEF3C7' : isPdf ? '#DBEAFE' : '#E0E7FF', color: isZip ? '#92400E' : isPdf ? '#1E40AF' : '#3730A3', padding: '0.15rem 0.5rem', borderRadius: '0.25rem', fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '0.2rem' }}>
+                        <span>{icon}</span> {f.name}
+                      </span>
+                    );
+                  })}
                   {selectedFiles.length > 15 && (
                     <span style={{ fontSize: '0.7rem', color: '#64748B', alignSelf: 'center' }}>
                       + {selectedFiles.length - 15} more files...
@@ -257,7 +259,7 @@ export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboar
                 opacity: isSubmitting || selectedFiles.length === 0 ? 0.6 : 1
               }}
             >
-              {isSubmitting ? '⏳ Initializing Batch Job...' : `⚡ Evaluate ${selectedFiles.length} Student Papers`}
+              {isSubmitting ? '⏳ Initializing & Unpacking Batch Job...' : `⚡ Evaluate ${selectedFiles.length} Uploaded File(s)`}
             </button>
           </div>
         ) : (
