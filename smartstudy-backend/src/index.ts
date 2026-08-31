@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { supabase, uploadImageToSupabase } from './db/supabase.js';
 import { performOcr } from './services/ocrService.js';
 import { generateRagQuestions, ingestPdfDocument, evaluateStudentAnswerAgainstPdf } from './services/ragService.js';
+import { extractQuestionsFromImage } from './services/openrouterService.js';
 import { uploadDisk, uploadsDir } from './middleware/upload.js';
 import { createBatchJob, getBatchJob } from './services/batchService.js';
 
@@ -16,6 +17,14 @@ const port = process.env.PORT || 3001;
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Incoming HTTP Request Logger
+app.use((req, res, next) => {
+  if (req.url !== '/api/submissions') {
+    console.log(`\n📡 [HTTP REQUEST] ${req.method} ${req.url} (${new Date().toLocaleTimeString()})`);
+  }
+  next();
+});
 
 // Serve uploads if configured
 if (uploadsDir && uploadsDir.length > 0) {
@@ -53,21 +62,40 @@ app.delete('/api/clear', async (req, res) => {
   }
 });
 
-// 3. Subject-Aware RAG Question Generator & PDF Ingestion with Sub-Topic Scope
-app.post('/api/rag/generate', uploadDisk.single('document'), async (req, res) => {
+// 3. Subject-Aware RAG Question Generator & PDF/Image/ZIP Ingestion with Sub-Topic Scope
+app.post('/api/rag/generate', uploadDisk.any(), async (req, res) => {
   try {
     const { className, topic, subjectLanguage, subTopicScope } = req.body;
-    const fileBuffer = req.file ? req.file.buffer : null;
+    const uploadedFiles = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
     const targetClass = className || 'Grade 5 General Science';
     const targetTopic = topic || 'Chapter Assessment';
 
-    // Ingest uploaded PDF into Supabase textbook_embeddings
-    await ingestPdfDocument(fileBuffer, targetClass, targetTopic);
+    // Ingest uploaded PDF/ZIP/Image files into Supabase textbook_embeddings
+    await ingestPdfDocument(uploadedFiles, targetClass, targetTopic);
 
     const questions = await generateRagQuestions(targetTopic, targetClass, subjectLanguage, subTopicScope || '');
     res.json({ success: true, questions });
   } catch (err: any) {
     console.error('RAG Error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 3b. Vision AI Question Paper Photo Extraction (Extracts Questions from Image Photos)
+app.post('/api/rag/extract-questions-from-image', uploadDisk.any(), async (req, res) => {
+  try {
+    const uploadedFiles = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
+    if (uploadedFiles.length === 0) {
+      return res.status(400).json({ success: false, message: 'No question paper photo uploaded.' });
+    }
+
+    const imageBuffers = uploadedFiles.map(f => f.buffer);
+    const primaryMime = uploadedFiles[0]?.mimetype || 'image/jpeg';
+
+    const questions = await extractQuestionsFromImage(imageBuffers, primaryMime);
+    res.json({ success: true, questions });
+  } catch (err: any) {
+    console.error('Photo Question Extraction Error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -137,10 +165,45 @@ app.get('/api/assignments', async (req, res) => {
   }
 });
 
-// 6. Submit Assignment (Pure Supabase Cloud Evaluation with Multi-Image Support)
-app.post('/api/submissions', uploadDisk.array('submission', 5), async (req, res) => {
+// 5b. Get Database Question Modules & Dispatched Assignments (100% DB-Driven)
+app.get('/api/question-modules', async (req, res) => {
   try {
-    const { assignmentId, studentName, selectedLanguage } = req.body;
+    const modules: any[] = [];
+
+    if (isSupabaseConfigured()) {
+      try {
+        const { data } = await supabase.from('assignments').select('*').order('created_at', { ascending: false });
+        if (data && data.length > 0) {
+          data.forEach((r) => {
+            const parsedQuestions = typeof r.questions_json === 'string' ? JSON.parse(r.questions_json || '[]') : r.questions_json;
+            if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
+              modules.push({
+                id: r.id,
+                title: r.title || 'Dispatched Assignment',
+                className: r.class_name || 'General Class',
+                language: 'English',
+                description: `DB Assignment (${parsedQuestions.length} Questions)`,
+                questions: parsedQuestions
+              });
+            }
+          });
+        }
+      } catch (dbErr) {
+        console.warn('Notice fetching DB assignments for modules:', dbErr);
+      }
+    }
+
+    res.json({ success: true, modules });
+  } catch (err: any) {
+    console.error('Question Modules Error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 6. Submit Assignment (Pure Supabase Cloud Evaluation with Multi-Image Support)
+app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
+  try {
+    const { assignmentId, studentName, selectedLanguage, className, subject } = req.body;
     const lang = selectedLanguage || 'English';
     const name = studentName || 'Aarav Sharma';
 
@@ -159,31 +222,38 @@ app.post('/api/submissions', uploadDisk.array('submission', 5), async (req, res)
       }
     }
 
+    const imageBuffers = uploadedFiles.map(f => f.buffer);
     const primaryFile = uploadedFiles.length > 0 ? uploadedFiles[0] : null;
-    const primaryBuffer = primaryFile ? primaryFile.buffer : null;
     const samplePaperUrl = samplePaperUrls.length > 0 ? samplePaperUrls[0] : '';
 
-    // Dynamically look up target assignment details from database
-    let targetClassName = lang.includes('Telugu') ? 'Grade 3 Telugu (తెలుగు)' : 'Grade 5 General Science';
-    let targetSubject = lang.includes('Telugu') ? 'Varnamala' : 'Science & Physics';
+    let targetClassName = className || 'Grade 5 General Science';
+    let targetSubject = subject || 'General Science';
+    let assignedQuestions: any[] = [];
 
-    if (isSupabaseConfigured() && assignmentId) {
+    if (assignmentId && process.env.SUPABASE_URL && !process.env.SUPABASE_URL.includes('your-project')) {
       try {
         const { data: assignData } = await supabase.from('assignments').select('*').eq('id', assignmentId).single();
         if (assignData) {
           if (assignData.class_name) targetClassName = assignData.class_name;
           if (assignData.title) targetSubject = assignData.title;
+          if (assignData.questions_json) {
+            try {
+              assignedQuestions = typeof assignData.questions_json === 'string'
+                ? JSON.parse(assignData.questions_json)
+                : assignData.questions_json;
+            } catch (e) {}
+          }
         }
       } catch (e) {
         console.warn('Assignment lookup notice:', e);
       }
     }
 
-    // Perform Vision LLM & Vector RAG evaluation
+    // Perform Vision LLM & Vector RAG evaluation across all uploaded paper pages
     let ocrText = '';
     let langCode = lang.substring(0, 3).toUpperCase();
     try {
-      const ocrResult = await performOcr(primaryBuffer || '', lang);
+      const ocrResult = await performOcr(imageBuffers.length > 0 ? imageBuffers[0] : '', lang);
       ocrText = ocrResult.ocrText;
       langCode = ocrResult.langCode;
     } catch (ocrErr) {
@@ -191,17 +261,28 @@ app.post('/api/submissions', uploadDisk.array('submission', 5), async (req, res)
       ocrText = '[Scanned handwritten paper upload]';
     }
 
-    // Evaluate student paper strictly against indexed textbook chunks for the SPECIFIC class
+    // Evaluate all uploaded student paper pages in a SINGLE Gemini API call
     const pdfEval = await evaluateStudentAnswerAgainstPdf(
       ocrText,
       targetClassName,
-      primaryBuffer,
-      primaryFile?.mimetype || 'image/jpeg'
+      imageBuffers,
+      primaryFile?.mimetype || 'image/jpeg',
+      assignedQuestions
     );
 
     const finalOcrText = pdfEval.ocrText || ocrText;
     const id = 'sub-' + Date.now();
     const submittedAt = new Date().toISOString();
+
+    const aiEvalData = {
+      ocrText: finalOcrText,
+      score: pdfEval.score,
+      excelledAreas: pdfEval.excelledAreas,
+      knowledgeGaps: pdfEval.knowledgeGaps,
+      feedback: pdfEval.feedback,
+      socraticHint: pdfEval.socraticHint,
+      questionEvaluations: pdfEval.questionEvaluations
+    };
 
     const submissionPayload: any = {
       id,
@@ -217,6 +298,7 @@ app.post('/api/submissions', uploadDisk.array('submission', 5), async (req, res)
       score: pdfEval.score,
       feedback: pdfEval.feedback,
       socratic_hint: pdfEval.socraticHint,
+      ai_evaluation_json: JSON.stringify(aiEvalData),
       status: 'pending_review',
       submitted_at: submittedAt
     };
@@ -224,10 +306,14 @@ app.post('/api/submissions', uploadDisk.array('submission', 5), async (req, res)
     if (isSupabaseConfigured()) {
       const { error: supaErr } = await supabase.from('submissions').insert([submissionPayload]);
       if (supaErr) {
-        console.warn('Supabase submission warning (retrying without sample_paper_urls column):', supaErr.message);
-        // Fallback for legacy database schema without sample_paper_urls column
+        console.warn('Supabase submission insert notice (retrying with legacy schema compatibility):', supaErr.message);
+        // Fallback for legacy database schema without optional columns
         delete submissionPayload.sample_paper_urls;
-        await supabase.from('submissions').insert([submissionPayload]);
+        delete submissionPayload.ai_evaluation_json;
+        const { error: retryErr } = await supabase.from('submissions').insert([submissionPayload]);
+        if (retryErr) {
+          console.warn('Supabase fallback insert notice:', retryErr.message);
+        }
       }
     }
 
@@ -263,7 +349,7 @@ app.post('/api/submissions', uploadDisk.array('submission', 5), async (req, res)
 });
 
 // 6b. Bulk Submit Assignments (50 to 100 Papers Batch Processing)
-app.post('/api/submissions/bulk', uploadDisk.array('submissions', 100), async (req, res) => {
+app.post('/api/submissions/bulk', uploadDisk.any(), async (req, res) => {
   try {
     const { assignmentId, selectedLanguage, className, subject } = req.body;
     const files = (req.files as Express.Multer.File[]) || [];
@@ -368,6 +454,13 @@ app.get('/api/submissions', async (req, res) => {
 
           const matchedAssignment = assignMap[r.assignment_id] || (Object.values(assignMap).length > 0 ? Object.values(assignMap)[0] : null);
 
+          let parsedAiEval: any = null;
+          if (r.ai_evaluation_json) {
+            try {
+              parsedAiEval = typeof r.ai_evaluation_json === 'string' ? JSON.parse(r.ai_evaluation_json) : r.ai_evaluation_json;
+            } catch (e) {}
+          }
+
           return {
             id: r.id,
             assignmentId: r.assignment_id,
@@ -383,7 +476,7 @@ app.get('/api/submissions', async (req, res) => {
             finalScore: r.final_score,
             finalFeedback: r.final_feedback,
             finalHint: r.final_hint,
-            aiEvaluation: {
+            aiEvaluation: parsedAiEval || {
               ocrText: r.ocr_text,
               score: r.score,
               feedback: r.feedback,

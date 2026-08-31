@@ -5,7 +5,7 @@ const storage = multer.memoryStorage();
 
 export const uploadDisk = multer({
   storage,
-  limits: { fileSize: 20 * 1024 * 1024 } // 20 MB max file size
+  limits: { fileSize: 100 * 1024 * 1024 } // 100 MB max file size for bulk ZIP/PDF uploads
 });
 
 export const uploadsDir: string = '';
