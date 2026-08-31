@@ -311,10 +311,11 @@ export async function generateRagQuestions(
   topic: string,
   className: string,
   language: string = 'English',
-  subTopicScope: string = ''
+  subTopicScope: string = '',
+  numQuestions: number = 5
 ): Promise<Question[]> {
   console.log(`\n===============================================================`);
-  console.log(`🎯 [RAG QUESTION GENERATOR] RETRIEVING TEXTBOOK CONTEXT FOR: "${topic}" (${className})`);
+  console.log(`🎯 [RAG QUESTION GENERATOR] RETRIEVING TEXTBOOK CONTEXT FOR: "${topic}" (${className}, ${numQuestions} Questions Requested)`);
   console.log(`===============================================================`);
 
   let textbookContent = cachedTextbookText[className] || '';
@@ -361,7 +362,7 @@ export async function generateRagQuestions(
   }
 
   console.log(`📝 Sending ${textbookContent.length} characters of actual textbook context to Gemini LLM for question generation...`);
-  return generateQuestionsFromTextbook(topic, className, textbookContent, subTopicScope);
+  return generateQuestionsFromTextbook(topic, className, textbookContent, subTopicScope, numQuestions);
 }
 
 

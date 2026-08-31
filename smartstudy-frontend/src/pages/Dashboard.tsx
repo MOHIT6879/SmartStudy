@@ -14,6 +14,7 @@ export default function Dashboard() {
   const [subjectLanguage, setSubjectLanguage] = useState('English');
   const [assignmentTitle, setAssignmentTitle] = useState('');
   const [subTopicScope, setSubTopicScope] = useState('');
+  const [numQuestions, setNumQuestions] = useState<string>('');
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
   const [submissions, setSubmissions] = useState<any[]>([]);
   const [reviewingSubmission, setReviewingSubmission] = useState<any>(null);
@@ -72,6 +73,8 @@ export default function Dashboard() {
       formData.append('className', className);
       formData.append('topic', assignmentTitle || 'General Chapter');
       formData.append('subjectLanguage', subjectLanguage);
+      const countVal = numQuestions && !isNaN(parseInt(numQuestions, 10)) ? parseInt(numQuestions, 10) : 5;
+      formData.append('numQuestions', countVal.toString());
       if (subTopicScope) {
         formData.append('subTopicScope', subTopicScope);
       }
@@ -459,6 +462,19 @@ export default function Dashboard() {
                 <option value="Hindi (हिंदी)">Hindi (हिंदी)</option>
                 <option value="Telugu (తెలుగు)">Telugu (తెలుగు)</option>
               </select>
+            </div>
+
+            <div className="input-group">
+              <label className="input-label">🎯 Question Count</label>
+              <input 
+                type="number"
+                min={1}
+                max={50}
+                className="input-field" 
+                placeholder="e.g. 5" 
+                value={numQuestions} 
+                onChange={(e) => setNumQuestions(e.target.value)}
+              />
             </div>
           </div>
 

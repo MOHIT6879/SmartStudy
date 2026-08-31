@@ -362,42 +362,38 @@ export async function generateQuestionsFromTextbook(
   topic: string,
   className: string,
   textbookContent: string,
-  subTopicScope?: string
+  subTopicScope?: string,
+  numQuestions: number = 5
 ): Promise<Question[]> {
-  const fallbackQuestions: Question[] = [
-    { id: 'q1', text: `What is the primary definition and scope of ${topic} according to the ${className} textbook?`, correctAnswer: `Core textbook definition of ${topic}.` },
-    { id: 'q2', text: `Explain two main methods or key concepts discussed under ${topic} in ${className}.`, correctAnswer: `Main concepts and key methods from textbook context.` },
-    { id: 'q3', text: `How are the fundamental principles of ${topic} applied in practical scenarios as detailed in ${className}?`, correctAnswer: `Practical applications and examples from textbook.` }
-  ];
+  const targetCount = numQuestions > 0 ? numQuestions : 5;
 
   const scopeInstruction = subTopicScope && subTopicScope.trim().length > 0
     ? `\nIMPORTANT TOPIC SCOPE CONSTRAINT: Restrict all generated questions STRICTLY to the specific sub-topic / days scope: "${subTopicScope}". Do NOT generate questions for any other parts of the chapter.\n`
     : '';
 
-  const snippetToUse = textbookContent ? textbookContent.substring(0, 8000) : '';
+  const snippetToUse = textbookContent ? textbookContent.substring(0, 12000) : '';
 
-  console.log(`🤖 Invoking Google Gemini 3.6 Flash to generate questions from ${snippetToUse.length} characters of textbook context...`);
+  console.log(`🤖 Invoking Google Gemini 3.6 Flash to generate EXACTLY ${targetCount} questions strictly from ${snippetToUse.length} characters of textbook context...`);
 
   const mathInstruction = (className.toLowerCase().includes('math') || topic.toLowerCase().includes('math') || topic.toLowerCase().includes('equation') || topic.toLowerCase().includes('algebra') || topic.toLowerCase().includes('geometry') || topic.toLowerCase().includes('trigonometry'))
-    ? `\nSPECIAL INSTRUCTION FOR MATHEMATICS: Generate 3 clear math problems/questions covering concepts, formulas, or problem-solving steps. Provide step-by-step ground-truth benchmark solution keys for each question.\n`
+    ? `\nSPECIAL INSTRUCTION FOR MATHEMATICS: Generate clear math problems/questions covering concepts, formulas, or problem-solving steps. Provide step-by-step ground-truth benchmark solution keys for each question.\n`
     : '';
 
-  const prompt = `You are a curriculum expert preparing examination questions for ${className} on the topic "${topic}".
+  const prompt = `You are an expert curriculum assistant preparing examination questions for ${className} on the topic "${topic}".
 ${scopeInstruction}
 ${mathInstruction}
 TEXTBOOK KNOWLEDGE BASE CONTENT:
 ${snippetToUse}
 
-INSTRUCTIONS:
-1. Generate 3 clear, curriculum-aligned examination questions based on the topic and textbook knowledge base content provided above.
-2. Formulate questions that test deep understanding of concepts or mathematical problem solving.
-3. Every question must include a clear question prompt and a step-by-step ground-truth reference answer key.
+CRITICAL KNOWLEDGE BASE GROUNDING GUARDRAILS (ZERO SELF-KNOWLEDGE):
+1. Generate EXACTLY ${targetCount} clear, curriculum-aligned examination questions based STRICTLY and EXCLUSIVELY on the TEXTBOOK KNOWLEDGE BASE CONTENT provided above.
+2. ZERO MODEL HALLUCINATION / SELF-KNOWLEDGE: Do NOT use any pre-trained model memory, outside internet facts, or external assumptions. If a concept, term, or definition is NOT explicitly stated in the provided textbook text, do NOT generate a question for it.
+3. GROUND TRUTH BENCHMARK KEYS: Every answer benchmark key MUST quote or directly summarize facts present in the provided textbook text.
 
-Return ONLY a valid JSON array of objects with NO markdown formatting or extra text matching this exact structure:
+Return ONLY a valid JSON array of objects containing EXACTLY ${targetCount} items with NO markdown formatting or code block wrappers:
 [
   { "id": "q1", "text": "Question 1 text...", "correctAnswer": "Answer benchmark key from textbook..." },
-  { "id": "q2", "text": "Question 2 text...", "correctAnswer": "Answer benchmark key from textbook..." },
-  { "id": "q3", "text": "Question 3 text...", "correctAnswer": "Answer benchmark key from textbook..." }
+  { "id": "q2", "text": "Question 2 text...", "correctAnswer": "Answer benchmark key from textbook..." }
 ]`;
 
   // 1. Direct Google Gemini API call
@@ -409,7 +405,7 @@ Return ONLY a valid JSON array of objects with NO markdown formatting or extra t
         const questions = JSON.parse(jsonMatch[0]) as Question[];
         if (Array.isArray(questions) && questions.length > 0) {
           console.log(`\n===============================================================`);
-          console.log(`🎯 [QUESTION POOL GENERATOR] SUCCESS! Generated ${questions.length} Questions:`);
+          console.log(`🎯 [QUESTION POOL GENERATOR] SUCCESS! Generated ${questions.length} Questions (Requested: ${targetCount}):`);
           questions.forEach((q, idx) => {
             console.log(`   Q${idx + 1}: ${q.text}`);
           });
@@ -422,8 +418,7 @@ Return ONLY a valid JSON array of objects with NO markdown formatting or extra t
     }
   }
 
-  console.warn('⚠️ Falling back to structured baseline questions for topic:', topic);
-  return fallbackQuestions;
+  return [];
 }
 
 /**

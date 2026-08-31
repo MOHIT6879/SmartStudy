@@ -65,15 +65,16 @@ app.delete('/api/clear', async (req, res) => {
 // 3. Subject-Aware RAG Question Generator & PDF/Image/ZIP Ingestion with Sub-Topic Scope
 app.post('/api/rag/generate', uploadDisk.any(), async (req, res) => {
   try {
-    const { className, topic, subjectLanguage, subTopicScope } = req.body;
+    const { className, topic, subjectLanguage, subTopicScope, numQuestions } = req.body;
     const uploadedFiles = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
     const targetClass = className || 'Grade 5 General Science';
     const targetTopic = topic || 'Chapter Assessment';
+    const countVal = numQuestions ? parseInt(numQuestions, 10) : 5;
 
     // Ingest uploaded PDF/ZIP/Image files into Supabase textbook_embeddings
     await ingestPdfDocument(uploadedFiles, targetClass, targetTopic);
 
-    const questions = await generateRagQuestions(targetTopic, targetClass, subjectLanguage, subTopicScope || '');
+    const questions = await generateRagQuestions(targetTopic, targetClass, subjectLanguage, subTopicScope || '', countVal);
     res.json({ success: true, questions });
   } catch (err: any) {
     console.error('RAG Error:', err);
