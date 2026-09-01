@@ -38,51 +38,66 @@ const getEmbeddingModel = () => process.env.OPENROUTER_EMBEDDING_MODEL || 'nvidi
 /**
  * Direct Google Gemini API Call (1,500 FREE Requests per Day - 0 Cost, No Credit Card)
  */
-async function callGeminiDirectApi(prompt: string, imageInput?: Buffer[] | Buffer | null, mimeType: string = 'image/jpeg'): Promise<string | null> {
+async function callGeminiDirectApi(prompt: string, imageInput?: Buffer[] | Buffer | null, mimeType: string = 'image/jpeg', maxRetries = 3): Promise<string | null> {
   const geminiKey = getGeminiApiKey();
   if (!geminiKey || geminiKey.includes('your_gemini_api_key')) return null;
 
-  try {
-    const buffers: Buffer[] = Array.isArray(imageInput)
-      ? imageInput.filter(b => b && b.length > 0)
-      : (imageInput && imageInput.length > 0 ? [imageInput] : []);
+  const buffers: Buffer[] = Array.isArray(imageInput)
+    ? imageInput.filter(b => b && b.length > 0)
+    : (imageInput && imageInput.length > 0 ? [imageInput] : []);
 
-    if (buffers.length > 0) {
-      console.log(`🤖 Requesting Vision OCR for ${buffers.length} page(s) in a SINGLE Gemini API request (1,500 Free Requests/Day quota)...`);
-    } else {
-      console.log(`🤖 Generating curriculum questions directly from Google Gemini API (1,500 Free Requests/Day quota)...`);
-    }
-    const parts: any[] = [{ text: prompt }];
+  if (buffers.length > 0) {
+    console.log(`🤖 Requesting Vision OCR for ${buffers.length} page(s) in a SINGLE Gemini API request (1,500 Free Requests/Day quota)...`);
+  } else {
+    console.log(`🤖 Generating curriculum questions directly from Google Gemini API (1,500 Free Requests/Day quota)...`);
+  }
 
-    for (const buf of buffers) {
-      parts.push({
-        inline_data: {
-          mime_type: mimeType,
-          data: buf.toString('base64')
-        }
-      });
-    }
-
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts }] })
-    });
-
-
-    if (res.ok) {
-      const data = await res.json() as any;
-      const responseText = data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
-      if (responseText) {
-        console.log(`✅ Successful response from Google Gemini Direct API.`);
-        return responseText;
+  const parts: any[] = [{ text: prompt }];
+  for (const buf of buffers) {
+    parts.push({
+      inline_data: {
+        mime_type: mimeType,
+        data: buf.toString('base64')
       }
-    } else {
-      const errBody = await res.text();
-      console.warn(`⚠️ Google Gemini Direct API notice (${res.status}): ${errBody.substring(0, 150)}`);
+    });
+  }
+
+  // Use valid public Gemini model name (gemini-1.5-flash or gemini-2.0-flash)
+  const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts }] })
+      });
+
+      if (res.ok) {
+        const data = await res.json() as any;
+        const responseText = data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
+        if (responseText) {
+          console.log(`✅ Successful response from Google Gemini Direct API (${modelName}).`);
+          return responseText;
+        }
+      } else {
+        const errBody = await res.text();
+        console.warn(`⚠️ Google Gemini Direct API notice (${res.status}) [Attempt ${attempt}/${maxRetries}]: ${errBody.substring(0, 150)}`);
+
+        // If rate limited (429) or temporary server busy (503), wait with backoff before retrying
+        if ((res.status === 429 || res.status === 503) && attempt < maxRetries) {
+          const waitTimeMs = attempt * 5000;
+          console.warn(`⏳ Rate limit / quota notice (${res.status}). Backing off and retrying in ${waitTimeMs / 1000}s...`);
+          await new Promise(r => setTimeout(r, waitTimeMs));
+          continue;
+        }
+      }
+    } catch (err) {
+      console.warn(`⚠️ Google Gemini Direct API fetch exception [Attempt ${attempt}/${maxRetries}]:`, err);
+      if (attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 3000));
+      }
     }
-  } catch (err) {
-    console.warn('⚠️ Google Gemini Direct API fetch exception:', err);
   }
 
   return null;
