@@ -82,7 +82,11 @@ async function callGeminiDirectApi(prompt: string, imageInput?: Buffer[] | Buffe
         }
       } else {
         const errBody = await res.text();
-        console.warn(`⚠️ Google Gemini Direct API notice (${res.status}) [Attempt ${attempt}/${maxRetries}]: ${errBody.substring(0, 150)}`);
+        let formattedErr = errBody;
+        try {
+          formattedErr = JSON.stringify(JSON.parse(errBody), null, 2);
+        } catch (e) {}
+        console.warn(`⚠️ Google Gemini Direct API notice (${res.status}) [Attempt ${attempt}/${maxRetries}]:\n${formattedErr}`);
 
         // If rate limited (429) or temporary server busy (503), wait with backoff before retrying
         if ((res.status === 429 || res.status === 503) && attempt < maxRetries) {

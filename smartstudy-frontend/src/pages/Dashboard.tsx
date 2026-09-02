@@ -101,7 +101,43 @@ export default function Dashboard() {
 
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [pastedQuestionText, setPastedQuestionText] = useState('');
+  const [isIngesting, setIsIngesting] = useState(false);
   const [isExtractingPhoto, setIsExtractingPhoto] = useState(false);
+  const [ingestStatus, setIngestStatus] = useState<string | null>(null);
+
+  const handleIngestKnowledgeBase = async () => {
+    if (uploadedFiles.length === 0) {
+      alert('⚠️ Please select textbook documents, PDFs, TXTs, or ZIP archives first.');
+      return;
+    }
+    setIsIngesting(true);
+    setIngestStatus(null);
+    try {
+      const formData = new FormData();
+      formData.append('className', className || 'Grade 11');
+      formData.append('topic', assignmentTitle || 'General Chapter');
+      uploadedFiles.forEach((file) => {
+        formData.append('documents', file);
+      });
+
+      const res = await fetch(`${API_BASE_URL}/api/rag/ingest`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data.success) {
+        setIngestStatus(data.message);
+        alert(`✅ Knowledge Base Ingested Successfully!\n${data.message}`);
+      } else {
+        alert(`⚠️ Ingestion failed: ${data.message}`);
+      }
+    } catch (err) {
+      console.error('Ingest error:', err);
+      alert('⚠️ Error ingesting knowledge base.');
+    } finally {
+      setIsIngesting(false);
+    }
+  };
 
   const handlePhotoQuestionUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
@@ -109,6 +145,23 @@ export default function Dashboard() {
     setIsExtractingPhoto(true);
 
     try {
+      // Auto-ingest attached textbook knowledge base if files are attached on left panel
+      if (uploadedFiles.length > 0) {
+        try {
+          const ingestData = new FormData();
+          ingestData.append('className', className || 'Grade 11');
+          ingestData.append('topic', assignmentTitle || 'General Chapter');
+          uploadedFiles.forEach(f => ingestData.append('documents', f));
+          const ingestRes = await fetch(`${API_BASE_URL}/api/rag/ingest`, { method: 'POST', body: ingestData });
+          const iData = await ingestRes.json();
+          if (iData.success) {
+            setIngestStatus(iData.message);
+          }
+        } catch (iErr) {
+          console.warn('Auto-ingest notice during photo upload:', iErr);
+        }
+      }
+
       const formData = new FormData();
       files.forEach(f => formData.append('questionPaper', f));
 
@@ -408,6 +461,12 @@ export default function Dashboard() {
                 )}
               </div>
             )}
+
+            {ingestStatus && (
+              <div style={{ marginTop: '0.75rem', background: '#ECFDF5', border: '1px solid #6EE7B7', color: '#065F46', padding: '0.5rem 0.75rem', borderRadius: '0.375rem', fontSize: '0.8rem', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.4rem', justifyContent: 'center' }}>
+                <span>🎯</span> {ingestStatus}
+              </div>
+            )}
           </div>
 
           <div className="grid-3" style={{ gap: '0.75rem' }}>
@@ -478,15 +537,25 @@ export default function Dashboard() {
             </div>
           </div>
 
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginTop: '0.75rem' }}>
+            <button 
+              className="btn"
+              style={{ background: '#059669', color: '#FFFFFF', padding: '0.75rem', fontWeight: 600 }}
+              onClick={handleIngestKnowledgeBase}
+              disabled={isIngesting || uploadedFiles.length === 0}
+            >
+              {isIngesting ? '⏳ Ingesting Knowledge Base...' : '📥 Ingest Knowledge Base Only'}
+            </button>
 
-          <button 
-            className="btn btn-primary" 
-            style={{ width: '100%', padding: '0.75rem', marginTop: '0.5rem' }}
-            onClick={handleGenerate}
-            disabled={isGenerating}
-          >
-            {isGenerating ? 'Extracting RAG Vectors & Generating...' : '✨ Generate Guardrailed Question Pool'}
-          </button>
+            <button 
+              className="btn btn-primary" 
+              style={{ padding: '0.75rem' }}
+              onClick={handleGenerate}
+              disabled={isGenerating}
+            >
+              {isGenerating ? 'Extracting RAG Vectors & Generating...' : '✨ Ingest & Generate Question Pool'}
+            </button>
+          </div>
         </div>
 
         {/* Right: Question Pool Preview */}
