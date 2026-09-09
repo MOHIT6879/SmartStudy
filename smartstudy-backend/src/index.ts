@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 import { supabase, uploadImageToSupabase } from './db/supabase.js';
 import { performOcr } from './services/ocrService.js';
 import { generateRagQuestions, ingestPdfDocument, evaluateStudentAnswerAgainstPdf } from './services/ragService.js';
-import { extractQuestionsFromImage } from './services/openrouterService.js';
+import { extractQuestionsFromImage } from './services/aiService.js';
 import { uploadDisk, uploadsDir } from './middleware/upload.js';
 import { createBatchJob, getBatchJob } from './services/batchService.js';
 
@@ -41,10 +41,97 @@ const isSupabaseConfigured = () => {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    message: 'SmartStudy AI Backend active (100% Supabase Cloud)',
-    supabaseActive: isSupabaseConfigured(),
-    supabaseUrl: process.env.SUPABASE_URL || 'Not Set'
+    message: 'SmartStudy Multi-Engine AI Backend Active (OpenAI + Anthropic Claude + Google Gemini)',
+    primaryProvider: process.env.PRIMARY_AI_PROVIDER || 'openai',
+    openAiConfigured: Boolean(process.env.OPENAI_API_KEY),
+    claudeConfigured: Boolean(process.env.ANTHROPIC_API_KEY),
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    supabaseActive: isSupabaseConfigured()
   });
+});
+
+// 1b. AI Model Diagnostic Endpoint
+app.get('/api/test-models', async (req, res) => {
+  const openAiKey = process.env.OPENAI_API_KEY || '';
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+  const geminiKey = process.env.GEMINI_API_KEY || '';
+  const results: any = { openai: {}, anthropic: {}, gemini: {} };
+
+  if (openAiKey) {
+    try {
+      const resModels = await fetch('https://api.openai.com/v1/models', {
+        headers: { 'Authorization': `Bearer ${openAiKey}` }
+      });
+      results.openai.status = resModels.status;
+      if (resModels.ok) {
+        const data = await resModels.json() as any;
+        results.openai.totalModels = data.data?.length || 0;
+        results.openai.sampleModels = (data.data || []).slice(0, 10).map((m: any) => m.id);
+      } else {
+        results.openai.error = await resModels.text();
+      }
+    } catch (e: any) {
+      results.openai.error = e.message;
+    }
+  } else {
+    results.openai.status = 'OPENAI_API_KEY missing';
+  }
+
+  if (anthropicKey) {
+    try {
+      const modelName = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022';
+      const resClaude = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': anthropicKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: modelName,
+          max_tokens: 50,
+          messages: [{ role: 'user', content: 'Ping test' }]
+        })
+      });
+      results.anthropic.status = resClaude.status;
+      results.anthropic.model = modelName;
+      if (resClaude.ok) {
+        const data = await resClaude.json() as any;
+        results.anthropic.response = data?.content?.[0]?.text;
+      } else {
+        results.anthropic.error = await resClaude.text();
+      }
+    } catch (e: any) {
+      results.anthropic.error = e.message;
+    }
+  } else {
+    results.anthropic.status = 'ANTHROPIC_API_KEY missing';
+  }
+
+  if (geminiKey) {
+    try {
+      const modelName = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+      const resGemini = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: 'Ping test' }] }] })
+      });
+      results.gemini.status = resGemini.status;
+      results.gemini.model = modelName;
+      if (resGemini.ok) {
+        const data = await resGemini.json() as any;
+        results.gemini.response = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      } else {
+        results.gemini.error = await resGemini.text();
+      }
+    } catch (e: any) {
+      results.gemini.error = e.message;
+    }
+  } else {
+    results.gemini.status = 'GEMINI_API_KEY missing';
+  }
+
+  res.json(results);
 });
 
 // 2. Clear Supabase Database Tables Route

@@ -128,7 +128,7 @@ export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboar
           <div>
             <h2 style={{ margin: 0, fontSize: '1.4rem', color: '#1E293B', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <span>🚀 Bulk Student Sheet Evaluation</span>
-              <span className="badge badge-primary" style={{ fontSize: '0.75rem' }}>Direct Gemini API</span>
+              <span className="badge badge-primary" style={{ fontSize: '0.75rem' }}>OpenAI Pro & Google Gemini</span>
             </h2>
             <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: '#64748B' }}>
               Upload batch student answer sheets (50 to 100 papers) for automated AI grading and RAG vector matching.
@@ -271,7 +271,7 @@ export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboar
                   Processing Batch Status ({batchJob?.processed || 0} / {batchJob?.total || selectedFiles.length} Graded)
                 </span>
                 <span className={`badge ${batchJob?.status === 'completed' ? 'badge-success' : 'badge-primary'}`}>
-                  {batchJob?.status === 'completed' ? '✅ Completed' : '⚡ Live Direct Gemini Worker Active'}
+                  {batchJob?.status === 'completed' ? '✅ Completed' : '⚡ Dual AI Worker Active'}
                 </span>
               </div>
 

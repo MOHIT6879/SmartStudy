@@ -3,7 +3,7 @@ import AdmZip from 'adm-zip';
 import fs from 'fs';
 import path from 'path';
 import { supabase } from '../db/supabase.js';
-import { generateEmbedding, generateQuestionsFromTextbook, analyzeStudentPaper } from './openrouterService.js';
+import { generateEmbedding, generateQuestionsFromTextbook, analyzeStudentPaper } from './aiService.js';
 import { performOcr } from './ocrService.js';
 
 export interface Question {
