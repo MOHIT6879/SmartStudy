@@ -305,7 +305,7 @@ Key Learning Objectives: Master core terminology, understand foundational theori
 }
 
 /**
- * 2. Generate Question Pool directly from Indexed Textbook Content via OpenRouter AI with Sub-Topic Scope
+ * 2. Generate Question Pool directly from Indexed Textbook Content via Google Gemini 3.6 with Sub-Topic Scope
  */
 export async function generateRagQuestions(
   topic: string,
@@ -421,7 +421,7 @@ export async function evaluateStudentAnswerAgainstPdf(
   }
 
 
-  // Use OpenRouter Vision LLM to perform OCR transcription and contextual RAG evaluation with assigned questions
+  // Use Google Gemini 3.6 Vision API to perform OCR transcription and contextual RAG evaluation with assigned questions
   const visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || []);
 
   return {

@@ -41,72 +41,18 @@ const isSupabaseConfigured = () => {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    message: 'SmartStudy Multi-Engine AI Backend Active (OpenAI + Anthropic Claude + Google Gemini)',
-    primaryProvider: process.env.PRIMARY_AI_PROVIDER || 'openai',
-    openAiConfigured: Boolean(process.env.OPENAI_API_KEY),
-    claudeConfigured: Boolean(process.env.ANTHROPIC_API_KEY),
+    message: 'SmartStudy Backend Active (Google Gemini 3.6 Engine)',
+    primaryProvider: process.env.PRIMARY_AI_PROVIDER || 'gemini',
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    geminiModel: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
     supabaseActive: isSupabaseConfigured()
   });
 });
 
-// 1b. AI Model Diagnostic Endpoint
+// 1b. AI Model Diagnostic Endpoint (Google Gemini 3.6)
 app.get('/api/test-models', async (req, res) => {
-  const openAiKey = process.env.OPENAI_API_KEY || '';
-  const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
   const geminiKey = process.env.GEMINI_API_KEY || '';
-  const results: any = { openai: {}, anthropic: {}, gemini: {} };
-
-  if (openAiKey) {
-    try {
-      const resModels = await fetch('https://api.openai.com/v1/models', {
-        headers: { 'Authorization': `Bearer ${openAiKey}` }
-      });
-      results.openai.status = resModels.status;
-      if (resModels.ok) {
-        const data = await resModels.json() as any;
-        results.openai.totalModels = data.data?.length || 0;
-        results.openai.sampleModels = (data.data || []).slice(0, 10).map((m: any) => m.id);
-      } else {
-        results.openai.error = await resModels.text();
-      }
-    } catch (e: any) {
-      results.openai.error = e.message;
-    }
-  } else {
-    results.openai.status = 'OPENAI_API_KEY missing';
-  }
-
-  if (anthropicKey) {
-    try {
-      const modelName = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022';
-      const resClaude = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'x-api-key': anthropicKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: modelName,
-          max_tokens: 50,
-          messages: [{ role: 'user', content: 'Ping test' }]
-        })
-      });
-      results.anthropic.status = resClaude.status;
-      results.anthropic.model = modelName;
-      if (resClaude.ok) {
-        const data = await resClaude.json() as any;
-        results.anthropic.response = data?.content?.[0]?.text;
-      } else {
-        results.anthropic.error = await resClaude.text();
-      }
-    } catch (e: any) {
-      results.anthropic.error = e.message;
-    }
-  } else {
-    results.anthropic.status = 'ANTHROPIC_API_KEY missing';
-  }
+  const results: any = { gemini: {} };
 
   if (geminiKey) {
     try {
