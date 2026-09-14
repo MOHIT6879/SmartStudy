@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import { supabase, uploadImageToSupabase } from './db/supabase.js';
 import { performOcr } from './services/ocrService.js';
 import { generateRagQuestions, ingestPdfDocument, evaluateStudentAnswerAgainstPdf } from './services/ragService.js';
-import { extractQuestionsFromImage } from './services/openrouterService.js';
+import { extractQuestionsFromImage, determineReasoningModel } from './services/aiService.js';
 import { uploadDisk, uploadsDir } from './middleware/upload.js';
 import { createBatchJob, getBatchJob } from './services/batchService.js';
 dotenv.config();
@@ -32,10 +32,43 @@ const isSupabaseConfigured = () => {
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
-        message: 'SmartStudy AI Backend active (100% Supabase Cloud)',
-        supabaseActive: isSupabaseConfigured(),
-        supabaseUrl: process.env.SUPABASE_URL || 'Not Set'
+        message: 'SmartStudy Backend Active (Google Gemini 3.6 Engine)',
+        primaryProvider: process.env.PRIMARY_AI_PROVIDER || 'gemini',
+        geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+        geminiModel: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+        supabaseActive: isSupabaseConfigured()
     });
+});
+// 1b. AI Model Diagnostic Endpoint (Google Gemini 3.6)
+app.get('/api/test-models', async (req, res) => {
+    const geminiKey = process.env.GEMINI_API_KEY || '';
+    const results = { gemini: {} };
+    if (geminiKey) {
+        try {
+            const modelName = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+            const resGemini = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contents: [{ parts: [{ text: 'Ping test' }] }] })
+            });
+            results.gemini.status = resGemini.status;
+            results.gemini.model = modelName;
+            if (resGemini.ok) {
+                const data = await resGemini.json();
+                results.gemini.response = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            }
+            else {
+                results.gemini.error = await resGemini.text();
+            }
+        }
+        catch (e) {
+            results.gemini.error = e.message;
+        }
+    }
+    else {
+        results.gemini.status = 'GEMINI_API_KEY missing';
+    }
+    res.json(results);
 });
 // 2. Clear Supabase Database Tables Route
 app.delete('/api/clear', async (req, res) => {
@@ -52,16 +85,39 @@ app.delete('/api/clear', async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
-// 3. Subject-Aware RAG Question Generator & PDF/Image/ZIP Ingestion with Sub-Topic Scope
-app.post('/api/rag/generate', uploadDisk.any(), async (req, res) => {
+// 3a. Standalone Knowledge Base Ingestion (Chunks & Vectorizes PDF/ZIP/TXT/Images into Supabase RAG)
+app.post('/api/rag/ingest', uploadDisk.any(), async (req, res) => {
     try {
-        const { className, topic, subjectLanguage, subTopicScope } = req.body;
+        const { className, topic } = req.body;
         const uploadedFiles = req.files || (req.file ? [req.file] : []);
         const targetClass = className || 'Grade 5 General Science';
         const targetTopic = topic || 'Chapter Assessment';
+        if (uploadedFiles.length === 0) {
+            return res.status(400).json({ success: false, message: 'No chapter documents or archives uploaded for ingestion.' });
+        }
+        const result = await ingestPdfDocument(uploadedFiles, targetClass, targetTopic);
+        res.json({
+            success: true,
+            message: `Successfully ingested knowledge base into Supabase RAG (${result.chunksCount} vector chunk(s) indexed for ${targetClass}).`,
+            chunksCount: result.chunksCount
+        });
+    }
+    catch (err) {
+        console.error('RAG Ingestion Error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+// 3. Subject-Aware RAG Question Generator & PDF/Image/ZIP Ingestion with Sub-Topic Scope
+app.post('/api/rag/generate', uploadDisk.any(), async (req, res) => {
+    try {
+        const { className, topic, subjectLanguage, subTopicScope, numQuestions } = req.body;
+        const uploadedFiles = req.files || (req.file ? [req.file] : []);
+        const targetClass = className || 'Grade 5 General Science';
+        const targetTopic = topic || 'Chapter Assessment';
+        const countVal = numQuestions ? parseInt(numQuestions, 10) : 5;
         // Ingest uploaded PDF/ZIP/Image files into Supabase textbook_embeddings
         await ingestPdfDocument(uploadedFiles, targetClass, targetTopic);
-        const questions = await generateRagQuestions(targetTopic, targetClass, subjectLanguage, subTopicScope || '');
+        const questions = await generateRagQuestions(targetTopic, targetClass, subjectLanguage, subTopicScope || '', countVal);
         res.json({ success: true, questions });
     }
     catch (err) {
@@ -94,18 +150,27 @@ app.post('/api/assignments', async (req, res) => {
         const createdAt = new Date().toISOString();
         const titleVal = title || 'Daily Learning Assignment';
         const classVal = className || 'Grade 5 Science';
+        const reasoningModel = await determineReasoningModel(classVal || titleVal, JSON.stringify(questions || []));
         const newAssignment = {
             id,
             title: titleVal,
             class_name: classVal,
             questions_json: JSON.stringify(questions || []),
+            reasoning_model: reasoningModel,
             status: 'dispatched',
             created_at: createdAt
         };
         if (isSupabaseConfigured()) {
-            const { error: dbErr } = await supabase.from('assignments').insert([newAssignment]);
-            if (dbErr)
-                console.error('Supabase DB Insert Error:', dbErr.message);
+            let { error: dbErr } = await supabase.from('assignments').insert([newAssignment]);
+            if (dbErr) {
+                console.warn('Supabase DB Insert Error (retrying without reasoning_model):', dbErr.message);
+                // Fallback for legacy schema if reasoning_model column is not yet created
+                const legacyAssignment = { ...newAssignment };
+                delete legacyAssignment.reasoning_model;
+                const { error: retryErr } = await supabase.from('assignments').insert([legacyAssignment]);
+                if (retryErr)
+                    console.error('Supabase DB Insert Fallback Error:', retryErr.message);
+            }
             await supabase.from('notifications').insert([{
                     id: 'notif-' + Date.now(),
                     type: 'assignment_dispatched',
@@ -134,6 +199,7 @@ app.get('/api/assignments', async (req, res) => {
                     title: r.title,
                     className: r.class_name,
                     questions: typeof r.questions_json === 'string' ? JSON.parse(r.questions_json || '[]') : r.questions_json,
+                    reasoningModel: r.reasoning_model,
                     status: r.status,
                     createdAt: r.created_at
                 }));
@@ -164,7 +230,8 @@ app.get('/api/question-modules', async (req, res) => {
                                 className: r.class_name || 'General Class',
                                 language: 'English',
                                 description: `DB Assignment (${parsedQuestions.length} Questions)`,
-                                questions: parsedQuestions
+                                questions: parsedQuestions,
+                                reasoningModel: r.reasoning_model
                             });
                         }
                     });
@@ -208,6 +275,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
         let targetClassName = className || 'Grade 5 General Science';
         let targetSubject = subject || 'General Science';
         let assignedQuestions = [];
+        let reasoningModel = 'gemini-3.6-flash';
         if (assignmentId && process.env.SUPABASE_URL && !process.env.SUPABASE_URL.includes('your-project')) {
             try {
                 const { data: assignData } = await supabase.from('assignments').select('*').eq('id', assignmentId).single();
@@ -216,6 +284,8 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
                         targetClassName = assignData.class_name;
                     if (assignData.title)
                         targetSubject = assignData.title;
+                    if (assignData.reasoning_model)
+                        reasoningModel = assignData.reasoning_model;
                     if (assignData.questions_json) {
                         try {
                             assignedQuestions = typeof assignData.questions_json === 'string'
@@ -243,7 +313,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
             ocrText = '[Scanned handwritten paper upload]';
         }
         // Evaluate all uploaded student paper pages in a SINGLE Gemini API call
-        const pdfEval = await evaluateStudentAnswerAgainstPdf(ocrText, targetClassName, imageBuffers, primaryFile?.mimetype || 'image/jpeg', assignedQuestions);
+        const pdfEval = await evaluateStudentAnswerAgainstPdf(ocrText, targetClassName, imageBuffers, primaryFile?.mimetype || 'image/jpeg', assignedQuestions, reasoningModel);
         const finalOcrText = pdfEval.ocrText || ocrText;
         const id = 'sub-' + Date.now();
         const submittedAt = new Date().toISOString();

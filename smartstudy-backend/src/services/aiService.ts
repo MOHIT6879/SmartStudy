@@ -40,7 +40,8 @@ export async function callGemini36Api(
   prompt: string,
   imageInput?: Buffer[] | Buffer | null,
   mimeType: string = 'image/jpeg',
-  maxRetries = 3
+  maxRetries = 3,
+  modelNameOverride?: string
 ): Promise<string | null> {
   const geminiKey = getGeminiKey();
   if (!geminiKey || geminiKey.includes('your_gemini_api_key')) {
@@ -62,7 +63,7 @@ export async function callGemini36Api(
     });
   }
 
-  const modelName = getGeminiModel();
+  const modelName = modelNameOverride || getGeminiModel();
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -155,6 +156,43 @@ export async function generateEmbedding(text: string): Promise<number[]> {
 }
 
 /**
+ * Dynamic Routing Logic for Reasoning Model
+ */
+export async function determineReasoningModel(subject: string, questionsText: string): Promise<string> {
+  const lowerSubject = subject ? subject.toLowerCase() : '';
+  if (lowerSubject.includes('hindi') || lowerSubject.includes('telugu')) {
+    return 'sarvam';
+  }
+
+  const prompt = `Evaluate the severity and complexity of the following assessment for the subject '${subject}'.
+Based on the complexity, choose the best reasoning model from the following options:
+- gemini-2.5-flash
+- gemini-3.6-flash
+- gemini-3.6-standard
+- gemini-3.6-pro
+
+Return ONLY the chosen model name as a raw string. Do not include quotes or any other text.
+
+Assessment Content:
+${questionsText.substring(0, 2000)}`;
+
+  try {
+    const chosenModel = await callGemini36Api(prompt, null, 'text/plain', 3, 'gemini-2.5-flash');
+    if (chosenModel) {
+      const model = chosenModel.trim().toLowerCase();
+      if (['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-3.6-standard', 'gemini-3.6-pro'].includes(model)) {
+        return model;
+      }
+    }
+  } catch (err) {
+    console.warn('⚠️ determineReasoningModel error:', err);
+  }
+
+  // Fallback
+  return 'gemini-3.6-flash';
+}
+
+/**
  * Safely parse JSON strings from LLMs by sanitizing unescaped control characters
  */
 function cleanAndParseJson(rawText: string): any {
@@ -189,7 +227,8 @@ export async function analyzeStudentPaper(
   imageInput: Buffer[] | Buffer | null,
   mimeType: string = 'image/jpeg',
   textbookChunks: string[] = [],
-  assignedQuestions: any[] = []
+  assignedQuestions: any[] = [],
+  evaluationModel?: string
 ): Promise<VisionEvaluationResult> {
   const buffers: Buffer[] = Array.isArray(imageInput)
     ? imageInput.filter(b => b && b.length > 0)
@@ -243,7 +282,7 @@ Return ONLY a valid JSON object matching this structure:
   ]
 }`;
 
-  const aiText = await callGemini36Api(systemPrompt, buffers, mimeType);
+  const aiText = await callGemini36Api(systemPrompt, buffers, mimeType, 3, evaluationModel);
   if (aiText) {
     const parsed = cleanAndParseJson(aiText);
     if (parsed) {

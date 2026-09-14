@@ -12,7 +12,8 @@ export interface OcrResult {
 export async function performOcr(
   imageSource: string | Buffer,
   languageName: string = 'English',
-  mimeType: string = 'image/jpeg'
+  mimeType: string = 'image/jpeg',
+  subject?: string
 ): Promise<OcrResult> {
   let langCode = 'ENG';
   if (languageName.includes('Hindi')) {
@@ -26,12 +27,21 @@ export async function performOcr(
     buffer = imageSource;
   }
 
+  // Determine OCR model based on subject
+  let ocrModel = 'gemini-2.5-flash'; // default for Science, Social, English
+  const lowerSubject = subject ? subject.toLowerCase() : '';
+  if (lowerSubject.includes('hindi') || lowerSubject.includes('telugu')) {
+    ocrModel = 'sarvam';
+  } else if (lowerSubject.includes('math')) {
+    ocrModel = 'gemini-3.6-flash';
+  }
+
   if (buffer) {
     try {
       const prompt = `Perform high-precision optical character recognition (OCR) on the provided handwritten answer sheet image in ${languageName} script.
 Transcribe all legible handwritten or printed text line by line. Do not summarize or alter student wording. Transcribe text exactly as written on paper.`;
 
-      const transcribed = await callGemini36Api(prompt, buffer, mimeType);
+      const transcribed = await callGemini36Api(prompt, buffer, mimeType, 3, ocrModel);
       if (transcribed && transcribed.trim().length > 0) {
         return {
           ocrText: transcribed.trim(),

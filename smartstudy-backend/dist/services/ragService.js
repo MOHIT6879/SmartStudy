@@ -1,7 +1,7 @@
 import * as pdfParseModule from 'pdf-parse';
 import AdmZip from 'adm-zip';
 import { supabase } from '../db/supabase.js';
-import { generateEmbedding, generateQuestionsFromTextbook, analyzeStudentPaper } from './openrouterService.js';
+import { generateEmbedding, generateQuestionsFromTextbook, analyzeStudentPaper } from './aiService.js';
 import { performOcr } from './ocrService.js';
 // In-memory cache for uploaded textbook text
 let cachedTextbookText = {};
@@ -157,7 +157,7 @@ export async function ingestPdfDocument(filesInput, className, chapterTitle, fil
                         }
                         else if (/\.(jpg|jpeg|png|webp|bmp)$/i.test(lowerEntry)) {
                             console.log(`  🖼️ [ZIP Extract] Performing Vision OCR on image: ${entryName}...`);
-                            const ocrRes = await performOcr(entryData, 'English');
+                            const ocrRes = await performOcr(entryData, 'English', 'image/jpeg', className);
                             textContent = ocrRes.ocrText;
                         }
                         else if (/\.(txt|md|json|csv|rtf|tsv|html|htm|xml|text)$/i.test(lowerEntry)) {
@@ -187,7 +187,7 @@ export async function ingestPdfDocument(filesInput, className, chapterTitle, fil
                 }
                 else if (/\.(jpg|jpeg|png|webp|bmp)$/i.test(lowerName)) {
                     console.log(`  🖼️ Performing Vision OCR on uploaded chapter image: ${fName}...`);
-                    const ocrRes = await performOcr(fBuffer, 'English');
+                    const ocrRes = await performOcr(fBuffer, 'English', 'image/jpeg', className);
                     textContent = ocrRes.ocrText;
                 }
                 else if (/\.(txt|md|json|csv|rtf|tsv|html|htm|xml|text)$/i.test(lowerName)) {
@@ -267,11 +267,11 @@ Key Learning Objectives: Master core terminology, understand foundational theori
     return { text: extractedText, chunksCount: chunks.length };
 }
 /**
- * 2. Generate Question Pool directly from Indexed Textbook Content via OpenRouter AI with Sub-Topic Scope
+ * 2. Generate Question Pool directly from Indexed Textbook Content via Google Gemini 3.6 with Sub-Topic Scope
  */
-export async function generateRagQuestions(topic, className, language = 'English', subTopicScope = '') {
+export async function generateRagQuestions(topic, className, language = 'English', subTopicScope = '', numQuestions = 5) {
     console.log(`\n===============================================================`);
-    console.log(`🎯 [RAG QUESTION GENERATOR] RETRIEVING TEXTBOOK CONTEXT FOR: "${topic}" (${className})`);
+    console.log(`🎯 [RAG QUESTION GENERATOR] RETRIEVING TEXTBOOK CONTEXT FOR: "${topic}" (${className}, ${numQuestions} Questions Requested)`);
     console.log(`===============================================================`);
     let textbookContent = cachedTextbookText[className] || '';
     // If cachedTextbookText is empty for className, attempt to pull chunks from Supabase pgvector
@@ -313,7 +313,7 @@ export async function generateRagQuestions(topic, className, language = 'English
         textbookContent = `Topic: ${topic}. Class: ${className}. Core principles and chapter concepts.`;
     }
     console.log(`📝 Sending ${textbookContent.length} characters of actual textbook context to Gemini LLM for question generation...`);
-    return generateQuestionsFromTextbook(topic, className, textbookContent, subTopicScope);
+    return generateQuestionsFromTextbook(topic, className, textbookContent, subTopicScope, numQuestions);
 }
 export const MODEL_THRESHOLDS = {
     VECTOR_MATCH_THRESHOLD: parseFloat(process.env.VECTOR_MATCH_THRESHOLD || '0.30'),
@@ -325,7 +325,7 @@ export const MODEL_THRESHOLDS = {
 /**
  * 3. Direct Google Gemini Vision LLM & Vector RAG Student Answer Evaluation
  */
-export async function evaluateStudentAnswerAgainstPdf(ocrText, className, imageInput, mimeType, assignedQuestions) {
+export async function evaluateStudentAnswerAgainstPdf(ocrText, className, imageInput, mimeType, assignedQuestions, reasoningModel) {
     let pdfChunks = [];
     // 1. Vector Cosine Similarity Search & Context Retrieval
     try {
@@ -358,8 +358,8 @@ export async function evaluateStudentAnswerAgainstPdf(ocrText, className, imageI
     catch (err) {
         console.warn('Error performing vector search:', err);
     }
-    // Use OpenRouter Vision LLM to perform OCR transcription and contextual RAG evaluation with assigned questions
-    const visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || []);
+    // Use Google Gemini 3.6 Vision API to perform OCR transcription and contextual RAG evaluation with assigned questions
+    const visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], reasoningModel);
     return {
         ocrText: visionRes.ocrText || ocrText,
         score: visionRes.score,

@@ -188,7 +188,7 @@ export async function ingestPdfDocument(
               textContent = await parsePdfBuffer(entryData);
             } else if (/\.(jpg|jpeg|png|webp|bmp)$/i.test(lowerEntry)) {
               console.log(`  🖼️ [ZIP Extract] Performing Vision OCR on image: ${entryName}...`);
-              const ocrRes = await performOcr(entryData, 'English');
+              const ocrRes = await performOcr(entryData, 'English', 'image/jpeg', className);
               textContent = ocrRes.ocrText;
             } else if (/\.(txt|md|json|csv|rtf|tsv|html|htm|xml|text)$/i.test(lowerEntry)) {
               textContent = entryData.toString('utf-8');
@@ -215,7 +215,7 @@ export async function ingestPdfDocument(
           textContent = await parsePdfBuffer(fBuffer);
         } else if (/\.(jpg|jpeg|png|webp|bmp)$/i.test(lowerName)) {
           console.log(`  🖼️ Performing Vision OCR on uploaded chapter image: ${fName}...`);
-          const ocrRes = await performOcr(fBuffer, 'English');
+          const ocrRes = await performOcr(fBuffer, 'English', 'image/jpeg', className);
           textContent = ocrRes.ocrText;
         } else if (/\.(txt|md|json|csv|rtf|tsv|html|htm|xml|text)$/i.test(lowerName)) {
           textContent = fBuffer.toString('utf-8');
@@ -382,7 +382,8 @@ export async function evaluateStudentAnswerAgainstPdf(
   className: string,
   imageInput?: Buffer[] | Buffer | null,
   mimeType?: string,
-  assignedQuestions?: Question[]
+  assignedQuestions?: Question[],
+  reasoningModel?: string
 ): Promise<EvaluationResult & { questionEvaluations?: any[] }> {
   let pdfChunks: string[] = [];
 
@@ -422,7 +423,7 @@ export async function evaluateStudentAnswerAgainstPdf(
 
 
   // Use Google Gemini 3.6 Vision API to perform OCR transcription and contextual RAG evaluation with assigned questions
-  const visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || []);
+  const visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], reasoningModel);
 
   return {
     ocrText: visionRes.ocrText || ocrText,

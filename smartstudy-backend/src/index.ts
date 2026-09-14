@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 import { supabase, uploadImageToSupabase } from './db/supabase.js';
 import { performOcr } from './services/ocrService.js';
 import { generateRagQuestions, ingestPdfDocument, evaluateStudentAnswerAgainstPdf } from './services/ragService.js';
-import { extractQuestionsFromImage } from './services/aiService.js';
+import { extractQuestionsFromImage, determineReasoningModel } from './services/aiService.js';
 import { uploadDisk, uploadsDir } from './middleware/upload.js';
 import { createBatchJob, getBatchJob } from './services/batchService.js';
 
@@ -168,18 +168,29 @@ app.post('/api/assignments', async (req, res) => {
     const titleVal = title || 'Daily Learning Assignment';
     const classVal = className || 'Grade 5 Science';
 
+    const reasoningModel = await determineReasoningModel(classVal || titleVal, JSON.stringify(questions || []));
+
     const newAssignment = {
       id,
       title: titleVal,
       class_name: classVal,
       questions_json: JSON.stringify(questions || []),
+      reasoning_model: reasoningModel,
       status: 'dispatched',
       created_at: createdAt
     };
 
     if (isSupabaseConfigured()) {
-      const { error: dbErr } = await supabase.from('assignments').insert([newAssignment]);
-      if (dbErr) console.error('Supabase DB Insert Error:', dbErr.message);
+      let { error: dbErr } = await supabase.from('assignments').insert([newAssignment]);
+      
+      if (dbErr) {
+        console.warn('Supabase DB Insert Error (retrying without reasoning_model):', dbErr.message);
+        // Fallback for legacy schema if reasoning_model column is not yet created
+        const legacyAssignment = { ...newAssignment };
+        delete (legacyAssignment as any).reasoning_model;
+        const { error: retryErr } = await supabase.from('assignments').insert([legacyAssignment]);
+        if (retryErr) console.error('Supabase DB Insert Fallback Error:', retryErr.message);
+      }
 
       await supabase.from('notifications').insert([{
         id: 'notif-' + Date.now(),
@@ -210,6 +221,7 @@ app.get('/api/assignments', async (req, res) => {
           title: r.title,
           className: r.class_name,
           questions: typeof r.questions_json === 'string' ? JSON.parse(r.questions_json || '[]') : r.questions_json,
+          reasoningModel: r.reasoning_model,
           status: r.status,
           createdAt: r.created_at
         }));
@@ -241,7 +253,8 @@ app.get('/api/question-modules', async (req, res) => {
                 className: r.class_name || 'General Class',
                 language: 'English',
                 description: `DB Assignment (${parsedQuestions.length} Questions)`,
-                questions: parsedQuestions
+                questions: parsedQuestions,
+                reasoningModel: r.reasoning_model
               });
             }
           });
@@ -287,6 +300,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
     let targetClassName = className || 'Grade 5 General Science';
     let targetSubject = subject || 'General Science';
     let assignedQuestions: any[] = [];
+    let reasoningModel = 'gemini-3.6-flash';
 
     if (assignmentId && process.env.SUPABASE_URL && !process.env.SUPABASE_URL.includes('your-project')) {
       try {
@@ -294,6 +308,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
         if (assignData) {
           if (assignData.class_name) targetClassName = assignData.class_name;
           if (assignData.title) targetSubject = assignData.title;
+          if (assignData.reasoning_model) reasoningModel = assignData.reasoning_model;
           if (assignData.questions_json) {
             try {
               assignedQuestions = typeof assignData.questions_json === 'string'
@@ -325,7 +340,8 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
       targetClassName,
       imageBuffers,
       primaryFile?.mimetype || 'image/jpeg',
-      assignedQuestions
+      assignedQuestions,
+      reasoningModel
     );
 
     const finalOcrText = pdfEval.ocrText || ocrText;
