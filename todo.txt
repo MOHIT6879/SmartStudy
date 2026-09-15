@@ -1,0 +1,31 @@
+A middleware which do dynamic routing based on question complexity(not needed for ssc)
+
+test chandra and sarvam for indic languages 
+
+OCR extraction - gemini 2.5 flash 
+
+Science 
+Social 
+English 
+
+OCR extractions - gemini 3.6 flash 
+
+Maths 
+
+OCR extraction - sarvaam or chandra 
+
+Hindi 
+Telugu 
+
+
+Reasoning - 3.6 flash
+
+Science 
+Social 
+English 
+Maths 
+
+Reasoning -  sarvaam or chandra 
+
+Hindi 
+Telugu 

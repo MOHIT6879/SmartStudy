@@ -3,3 +3,8 @@ dist/
 .env
 *.log
 .DS_Store
+
+# Test/sample data - keep local only
+CBSE Grade 11 Psychology TB/
+sample_pdfs/
+student answer sheets/

@@ -23,8 +23,8 @@ test('Dynamic Model Routing & Integrations', async (t) => {
   await t.test('3. Reasoning Model Routing - Science', async () => {
     const questions = "1. What is photosynthesis? 2. Explain the process of plant reproduction.";
     const model = await determineReasoningModel('Science', questions);
-    // Because this makes a real API call to gemini-2.5-flash, the result will be one of the allowed options
-    const allowedModels = ['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-3.6-standard', 'gemini-3.6-pro'];
+    // Because this makes a real API call to gemini-3.5-flash, the result will be one of the allowed options
+    const allowedModels = ['gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.6-standard', 'gemini-3.6-pro'];
     assert.ok(allowedModels.includes(model), `Science subject reasoning model should be one of the dynamically chosen gemini models, got: ${model}`);
   });
 

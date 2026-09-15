@@ -9,7 +9,7 @@ interface SubmissionReviewModalProps {
 export default function SubmissionReviewModal({ submission, onClose, onApprove }: SubmissionReviewModalProps) {
   const [feedback, setFeedback] = useState(submission.aiEvaluation?.feedback || submission.finalFeedback || '');
   const [hint, setHint] = useState(submission.aiEvaluation?.socraticHint || submission.finalHint || '');
-  const [score, setScore] = useState(submission.aiEvaluation?.score || submission.finalScore || 85);
+  const [score, setScore] = useState(submission.aiEvaluation?.score ?? submission.finalScore ?? 0);
   
   // Page Carousel & Fullscreen Zoom states
   const [activePageIndex, setActivePageIndex] = useState(0);
@@ -23,9 +23,9 @@ export default function SubmissionReviewModal({ submission, onClose, onApprove }
 
   // Support multi-image URLs or single image fallback
   const rawUrls = submission.samplePaperUrls || submission.sample_paper_urls;
-  const imageList: string[] = Array.isArray(rawUrls) && rawUrls.length > 0 
-    ? rawUrls 
-    : [submission.samplePaperUrl || submission.sample_paper_url || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'];
+  const imageList: string[] = Array.isArray(rawUrls)
+    ? rawUrls
+    : (submission.samplePaperUrl || submission.sample_paper_url ? [submission.samplePaperUrl || submission.sample_paper_url] : []);
 
   const activeImageUrl = imageList[activePageIndex] || imageList[0];
 
@@ -70,11 +70,7 @@ export default function SubmissionReviewModal({ submission, onClose, onApprove }
             >
               ✕
             </button>
-            <img 
-              src={activeImageUrl} 
-              alt="Student Full Paper" 
-              style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: '0.5rem', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)' }} 
-            />
+            {activeImageUrl ? <img src={activeImageUrl} alt="Student Full Paper" style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: '0.5rem', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)' }} /> : <p style={{ color: 'white' }}>No scan image available.</p>}
             <p style={{ color: 'white', marginTop: '1rem', fontSize: '0.9rem' }}>
               Page {activePageIndex + 1} of {imageList.length} • Click anywhere to close
             </p>
@@ -140,11 +136,7 @@ export default function SubmissionReviewModal({ submission, onClose, onApprove }
             }}
             onClick={() => setIsZoomOpen(true)}
             >
-              <img 
-                src={activeImageUrl} 
-                alt="Student Handwritten Paper" 
-                style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.95 }}
-              />
+              {activeImageUrl ? <img src={activeImageUrl} alt="Student Handwritten Paper" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.95 }} /> : <p style={{ color: '#CBD5E1' }}>No scan image available.</p>}
               <div style={{
                 position: 'absolute',
                 bottom: 8,

@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { callSarvamChatApi, performSarvamVisionOcr } from './sarvamService.js';
 dotenv.config();
 
 export interface Question {
@@ -43,6 +44,13 @@ export async function callGemini36Api(
   maxRetries = 3,
   modelNameOverride?: string
 ): Promise<string | null> {
+  if (modelNameOverride === 'sarvam') {
+    if (imageInput) {
+      throw new Error('Sarvam chat does not accept image input. Use Sarvam Vision OCR before chat reasoning.');
+    }
+    return callSarvamChatApi(prompt, maxRetries);
+  }
+
   const geminiKey = getGeminiKey();
   if (!geminiKey || geminiKey.includes('your_gemini_api_key')) {
     console.warn('⚠️ GEMINI_API_KEY is missing or invalid.');
@@ -166,7 +174,7 @@ export async function determineReasoningModel(subject: string, questionsText: st
 
   const prompt = `Evaluate the severity and complexity of the following assessment for the subject '${subject}'.
 Based on the complexity, choose the best reasoning model from the following options:
-- gemini-2.5-flash
+- gemini-3.5-flash
 - gemini-3.6-flash
 - gemini-3.6-standard
 - gemini-3.6-pro
@@ -177,10 +185,10 @@ Assessment Content:
 ${questionsText.substring(0, 2000)}`;
 
   try {
-    const chosenModel = await callGemini36Api(prompt, null, 'text/plain', 3, 'gemini-2.5-flash');
+    const chosenModel = await callGemini36Api(prompt, null, 'text/plain', 3, 'gemini-3.5-flash');
     if (chosenModel) {
       const model = chosenModel.trim().toLowerCase();
-      if (['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-3.6-standard', 'gemini-3.6-pro'].includes(model)) {
+      if (['gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.6-standard', 'gemini-3.6-pro'].includes(model)) {
         return model;
       }
     }
@@ -282,10 +290,20 @@ Return ONLY a valid JSON object matching this structure:
   ]
 }`;
 
-  const aiText = await callGemini36Api(systemPrompt, buffers, mimeType, 3, evaluationModel);
+  let evaluationPrompt = systemPrompt;
+  let evaluationImages: Buffer[] | null = buffers;
+  if (evaluationModel === 'sarvam') {
+    console.log(`🇮🇳 [SARVAM PIPELINE] Digitizing ${buffers.length} page(s) via Sarvam Vision OCR before LLM reasoning...`);
+    const sarvamOcrPages = await Promise.all(buffers.map((buffer) => performSarvamVisionOcr(buffer, mimeType, 'Hindi/Telugu')));
+    evaluationPrompt = `${systemPrompt}\n\nSARVAM VISION TRANSCRIPTION:\n${sarvamOcrPages.filter(Boolean).join('\n\n')}`;
+    evaluationImages = null;
+    console.log(`🇮🇳 [SARVAM PIPELINE] Vision transcription completed. Feeding to Sarvam Chat Reasoning (${process.env.SARVAM_CHAT_MODEL || 'sarvam-105b'})...`);
+  }
+  const aiText = await callGemini36Api(evaluationPrompt, evaluationImages, mimeType, 3, evaluationModel);
   if (aiText) {
     const parsed = cleanAndParseJson(aiText);
     if (parsed) {
+      console.log(`📊 [EVALUATION PARSED] Score: ${parsed.score}%, Excelled: [${(parsed.excelledAreas || []).join(', ')}], Gaps: [${(parsed.knowledgeGaps || []).join(', ')}]`);
       return {
         ocrText: parsed.ocrText || 'OCR transcription unavailable',
         score: typeof parsed.score === 'number' ? parsed.score : 0,

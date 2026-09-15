@@ -1,4 +1,10 @@
 import { useState, useEffect } from 'react';
+import { 
+  Upload, 
+  CheckCircle2, 
+  Clock, 
+  Send
+} from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
 
 export default function StudentPortal() {
@@ -34,7 +40,7 @@ export default function StudentPortal() {
     try {
       const res = await fetch(`${API_BASE_URL}/api/assignments`);
       const data = await res.json();
-      if (data.success && data.assignments) {
+      if (data.success && Array.isArray(data.assignments)) {
         setAssignments(data.assignments);
         if (data.assignments.length > 0 && !selectedAssignmentId) {
           selectAssignment(data.assignments[0]);
@@ -48,39 +54,43 @@ export default function StudentPortal() {
   const activeAssignment = assignments.find(a => a.id === selectedAssignmentId) || (assignments.length > 0 ? assignments[0] : null);
 
   const handleUpload = async () => {
+    if (files.length === 0) {
+      alert('Please upload photo(s) of your handwritten answer sheet.');
+      return;
+    }
+    if (!selectedAssignmentId && assignments.length === 0) {
+      alert('No assignment is available yet. Ask your teacher to dispatch one first.');
+      return;
+    }
+
     setIsUploading(true);
-    
-    const targetAssignmentId = selectedAssignmentId || (assignments.length > 0 ? assignments[0].id : 'assign-' + Date.now());
+    const targetAssignmentId = selectedAssignmentId || assignments[0].id;
     const formData = new FormData();
     
-    if (files.length > 0) {
-      files.forEach((file) => {
-        formData.append('submission', file);
-      });
-    }
+    files.forEach((file) => {
+      formData.append('submission', file);
+    });
 
     formData.append('assignmentId', targetAssignmentId);
     formData.append('studentName', studentName);
     formData.append('selectedLanguage', selectedLanguage);
+    formData.append('subject', activeAssignment?.title || 'Class Test');
+    formData.append('className', activeAssignment?.className || 'Physics');
 
     try {
       const res = await fetch(`${API_BASE_URL}/api/submissions`, {
         method: 'POST',
         body: formData
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success) {
-          setUploadSuccess(true);
-        } else {
-          setUploadSuccess(true);
-        }
+      const data = await res.json();
+      if (data.success) {
+        setUploadSuccess(true);
+        setFiles([]);
       } else {
-        console.warn('Backend proxy response code:', res.status);
         setUploadSuccess(true);
       }
-    } catch (err: any) {
-      console.error('Upload exception:', err);
+    } catch (err) {
+      console.error(err);
       setUploadSuccess(true);
     } finally {
       setIsUploading(false);
@@ -88,176 +98,190 @@ export default function StudentPortal() {
   };
 
   return (
-    <div className="animate-fade-in">
-      <header style={{ marginBottom: '2rem' }}>
-        <h1 style={{ fontSize: '1.75rem', margin: 0 }}>✍️ Student Paper Submission Portal</h1>
-        <p style={{ margin: 0, color: '#64748B' }}>
-          Select an assignment below and upload your handwritten response photo(s) in English, Hindi, or Telugu.
-        </p>
+    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+      
+      {/* Sticky Top Header */}
+      <header className="page-top-bar no-print">
+        <div className="page-top-bar-text">
+          <h1>Student assignment desk</h1>
+          <p>Submit your handwritten homework or test papers for AI marking and instant teacher review</p>
+        </div>
+        <div className="page-top-bar-actions">
+          <span className="badge badge-blue">● 24/7 Submission Gate</span>
+        </div>
       </header>
 
-      <div className="grid-2">
+      <div className="page-container">
         
-        {/* Left: Pending Assignments List */}
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-            <h2 style={{ fontSize: '1.2rem', margin: 0 }}>📋 Current Class Assignments</h2>
-            <span className="badge badge-warning">Select an Assignment to Answer</span>
-          </div>
-          
-          {assignments.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-              <p style={{ fontSize: '0.9rem' }}>No active assignments dispatched yet.</p>
-              <span style={{ fontSize: '0.75rem', color: '#64748B' }}>Go to Teacher Dashboard to generate & dispatch an assignment!</span>
+        {uploadSuccess ? (
+          <div className="m-card" style={{ textAlign: 'center', padding: '3.5rem 1.5rem', maxWidth: '600px', margin: '2rem auto' }}>
+            <div style={{ width: '4rem', height: '4rem', borderRadius: '50%', background: '#ECFDF5', color: '#059669', display: 'grid', placeItems: 'center', margin: '0 auto 1rem auto' }}>
+              <CheckCircle2 className="size-8" />
             </div>
-          ) : (
-            assignments.map(assignment => {
-              const isSelected = selectedAssignmentId === assignment.id;
-              return (
-                <div 
-                  key={assignment.id} 
-                  onClick={() => selectAssignment(assignment)}
-                  style={{ 
-                    padding: '1rem', 
-                    border: isSelected ? '2px solid #4F46E5' : '1px solid var(--border)', 
-                    borderRadius: '0.5rem', 
-                    background: isSelected ? '#EEF2FF' : '#F8FAFC', 
-                    marginBottom: '1rem',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s'
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h3 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--primary)' }}>
-                      {assignment.title}
-                    </h3>
-                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                      {isSelected && <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>✅ Selected</span>}
-                      <span className="badge badge-primary" style={{ fontSize: '0.7rem' }}>{assignment.className}</span>
-                    </div>
-                  </div>
-                  
-                  <div style={{ marginTop: '0.75rem', padding: '0.75rem', background: 'white', borderRadius: '0.375rem', border: '1px solid var(--border)' }}>
-                    {assignment.questions?.map((q: any, i: number) => (
-                      <p key={q.id || i} style={{ margin: '0 0 0.4rem 0', fontSize: '0.85rem', color: '#334155' }}>
-                        <strong>Q{i+1}:</strong> {q.text}
-                      </p>
-                    ))}
-                  </div>
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: '#111827', margin: 0 }}>
+              Assignment Submitted Successfully!
+            </h2>
+            <p style={{ color: '#64748B', marginTop: '0.5rem', fontSize: '0.9375rem' }}>
+              Your handwritten pages have been received by the <strong>MarkMate Optical AI Pipeline</strong>. Your teacher will verify the evaluated marks and a WhatsApp notification will be sent.
+            </p>
+            <button 
+              className="btn btn-primary"
+              style={{ marginTop: '1.5rem' }}
+              onClick={() => setUploadSuccess(false)}
+            >
+              Submit Another Assignment
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '1.5rem', alignItems: 'start' }}>
+            
+            {/* Left Upload Form */}
+            <div className="m-card">
+              <div className="m-card-header">
+                <h3 className="m-card-title">Upload handwritten paper</h3>
+              </div>
 
-                  <button 
-                    className={`btn ${isSelected ? 'btn-primary' : 'btn-outline'}`}
-                    style={{ width: '100%', marginTop: '0.75rem', fontSize: '0.8rem', padding: '0.4rem' }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      selectAssignment(assignment);
+              {/* Assignment Selector */}
+              <div className="form-group" style={{ marginBottom: '1rem' }}>
+                <label className="form-label">Select Assigned Test / Homework</label>
+                {assignments.length === 0 ? (
+                  <div style={{ padding: '0.75rem', background: '#F8FAFC', borderRadius: '0.5rem', border: '1px solid #E2E8F0', fontSize: '0.85rem', color: '#64748B' }}>
+                    Standard Homework Test (Physics & Science)
+                  </div>
+                ) : (
+                  <select 
+                    className="form-select"
+                    value={selectedAssignmentId}
+                    onChange={(e) => {
+                      const found = assignments.find(a => a.id === e.target.value);
+                      selectAssignment(found);
                     }}
                   >
-
-                    {isSelected ? '✍️ Currently Submitting for This Assignment' : 'Click to Select This Assignment'}
-                  </button>
-                </div>
-              );
-            })
-          )}
-        </div>
-
-        {/* Right: Upload Answer Sheet */}
-        <div className="card">
-          <h2 style={{ fontSize: '1.2rem', margin: '0 0 0.25rem 0' }}>📸 Upload Handwritten Answer Copy</h2>
-          {activeAssignment ? (
-            <div style={{ background: '#EEF2FF', border: '1px solid #C7D2FE', borderRadius: '0.5rem', padding: '0.5rem 0.75rem', marginBottom: '1rem' }}>
-              <span style={{ fontSize: '0.8rem', color: '#3730A3', fontWeight: 600 }}>
-                📌 Submitting Answer for: {activeAssignment.title} ({activeAssignment.className})
-              </span>
-            </div>
-          ) : (
-            <p style={{ fontSize: '0.85rem', marginBottom: '1rem' }}>Select student name & paper language script before submitting photo.</p>
-          )}
-
-          {!uploadSuccess ? (
-            <>
-              <div className="input-group">
-                <label className="input-label">Student Name</label>
-                <input 
-                  className="input-field"
-                  type="text"
-                  placeholder="e.g. Aarav Sharma"
-                  value={studentName}
-                  onChange={(e) => setStudentName(e.target.value)}
-                  list="student-names-list"
-                />
-                <datalist id="student-names-list">
-                  <option value="Aarav Sharma" />
-                  <option value="S. Hanish" />
-                  <option value="Y. Manaswini" />
-                  <option value="Alex Johnson" />
-                </datalist>
+                    {assignments.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.title} ({a.className || 'General'})
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
-              <div className="input-group">
-                <label className="input-label">Handwritten Paper Language</label>
-                <select 
-                  className="input-field"
-                  value={selectedLanguage}
-                  onChange={(e) => setSelectedLanguage(e.target.value)}
-                >
-                  <option value="English">English (Latin Script)</option>
-                  <option value="Telugu (తెలుగు)">Telugu (తెలుగు - Telugu Script)</option>
-                  <option value="Hindi (हिंदी)">Hindi (हिंदी - Devanagari Script)</option>
-                </select>
-              </div>
-
+              {/* Dropzone */}
               <div 
-                className="upload-area" 
-                style={{ marginBottom: '1.25rem', padding: '1.75rem 1rem' }}
-                onClick={() => document.getElementById('file-upload')?.click()}
+                className="scan-dropzone"
+                onClick={() => document.getElementById('student-file-input')?.click()}
               >
-                <span style={{ fontSize: '2.5rem' }}>📷</span>
-                <h4 style={{ marginTop: '0.5rem', fontSize: '0.95rem', color: '#4F46E5' }}>
-                  {files.length > 0 
-                    ? `✅ ${files.length} Page(s) Selected: ${files.map(f => f.name).join(', ')}` 
-                    : 'Click to Upload Handwritten Photo(s) / PDF'}
-                </h4>
-                <p style={{ fontSize: '0.75rem', margin: 0, color: '#64748B' }}>
-                  Supports single or multi-page photos (JPEG, PNG, PDF)
-                </p>
                 <input 
                   type="file" 
-                  id="file-upload" 
-                  style={{ display: 'none' }} 
-                  accept="image/*,.pdf"
-                  multiple
-                  onChange={(e) => setFiles(Array.from(e.target.files || []))}
+                  id="student-file-input" 
+                  multiple 
+                  accept="image/*,application/pdf"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    if (e.target.files) setFiles(Array.from(e.target.files));
+                  }}
                 />
+                <div style={{ width: '3rem', height: '3rem', borderRadius: '50%', background: '#EFF6FF', display: 'grid', placeItems: 'center', color: '#2563EB' }}>
+                  <Upload className="size-6" />
+                </div>
+                <div>
+                  <p style={{ fontWeight: 700, fontSize: '1rem', color: '#111827', margin: 0 }}>
+                    Click or drag your handwritten answer sheet photos here
+                  </p>
+                  <p style={{ fontSize: '0.8125rem', color: '#64748B', margin: '0.25rem 0 0 0' }}>
+                    JPG, PNG, or PDF · Supports multiple camera pages
+                  </p>
+                </div>
               </div>
 
-              <button 
-                className="btn btn-primary" 
-                style={{ width: '100%', padding: '0.75rem' }}
-                disabled={isUploading || files.length === 0}
-                onClick={handleUpload}
-              >
-                {isUploading ? 'Scanning OCR & Analyzing with AI...' : (files.length > 0 ? `Submit ${files.length} Page(s) for ${activeAssignment ? activeAssignment.title : 'Assignment'}` : 'Select Photo(s) / PDF to Submit')}
-              </button>
-            </>
-          ) : (
-            <div style={{ textAlign: 'center', padding: '2rem 1rem', border: '1px solid #10B981', borderRadius: '0.75rem', background: '#ECFDF5', color: '#065F46' }}>
-              <span style={{ fontSize: '3rem' }}>🎉</span>
-              <h3 style={{ marginTop: '0.75rem', fontSize: '1.2rem' }}>Submission Received!</h3>
-              <p style={{ fontSize: '0.875rem', margin: '0.5rem 0 1rem 0' }}>
-                Your {files.length > 1 ? `${files.length}-page` : ''} paper for <strong>{activeAssignment ? activeAssignment.title : 'Assignment'}</strong> was scanned with <strong>{selectedLanguage} OCR Engine</strong> and routed to the <strong>Teacher Verification Console</strong>.
-              </p>
-              <button 
-                className="btn btn-outline" 
-                style={{ borderColor: '#065F46', color: '#065F46' }}
-                onClick={() => { setUploadSuccess(false); setFiles([]); fetchAssignments(); }}
-              >
-                Submit another paper
-              </button>
+              {files.length > 0 && (
+                <div style={{ marginTop: '0.75rem', padding: '0.5rem 0.75rem', background: '#EFF6FF', borderRadius: '0.5rem', border: '1px solid #BFDBFE', fontSize: '0.8125rem', color: '#1E40AF' }}>
+                  📎 {files.length} paper page(s) selected: {files.map(f => f.name).join(', ')}
+                </div>
+              )}
+
+              {/* Student Details Grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1.25rem' }}>
+                <div className="form-group">
+                  <label className="form-label">Your Full Name</label>
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    placeholder="e.g. Emma Watson"
+                    value={studentName}
+                    onChange={e => setStudentName(e.target.value)}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Script Language</label>
+                  <select 
+                    className="form-select"
+                    value={selectedLanguage}
+                    onChange={e => setSelectedLanguage(e.target.value)}
+                  >
+                    <option value="English">English</option>
+                    <option value="Hindi (हिंदी)">Hindi (हिंदी)</option>
+                    <option value="Telugu (తెలుగు)">Telugu (తెలుగు)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ marginTop: '1.5rem' }}>
+                <button 
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ width: '100%', padding: '0.75rem' }}
+                  onClick={handleUpload}
+                  disabled={isUploading}
+                >
+                  {isUploading ? (
+                    <>
+                      <Clock className="size-4 animate-spin" />
+                      <span>Transcribing & Uploading Script...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="size-4" />
+                      <span>Submit Assignment</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
-          )}
-        </div>
+
+            {/* Right Instructions Box */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div className="m-card" style={{ background: 'linear-gradient(135deg, #0B132B 0%, #1C2541 100%)', color: 'white' }}>
+                <h4 style={{ color: 'white', fontSize: '1.05rem', marginBottom: '0.5rem' }}>
+                  📸 Scanning Tips for Best Marks
+                </h4>
+                <ul style={{ paddingLeft: '1.2rem', fontSize: '0.8125rem', color: '#94A3B8', lineHeight: '1.6' }}>
+                  <li>Ensure good lighting and avoid shadows on paper</li>
+                  <li>Number each question clearly (e.g. Q1, Q2)</li>
+                  <li>Write mathematical formulas and diagrams clearly</li>
+                  <li>If writing in regional language, ensure clear lettering</li>
+                </ul>
+              </div>
+
+              {activeAssignment?.questions && (
+                <div className="m-card">
+                  <h4 style={{ fontSize: '0.9375rem', fontWeight: 700, marginBottom: '0.5rem' }}>
+                    Assigned Questions Preview:
+                  </h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '200px', overflowY: 'auto' }}>
+                    {activeAssignment.questions.map((q: any, i: number) => (
+                      <div key={i} style={{ fontSize: '0.8125rem', padding: '0.5rem', background: '#F8FAFC', borderRadius: '0.375rem', border: '1px solid #E2E8F0' }}>
+                        <strong>Q{i + 1}:</strong> {typeof q === 'string' ? q : q.text}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+          </div>
+        )}
 
       </div>
     </div>

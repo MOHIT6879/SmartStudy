@@ -20,9 +20,9 @@ app.use(express.json());
 
 // Incoming HTTP Request Logger
 app.use((req, res, next) => {
-  if (req.url !== '/api/submissions') {
-    console.log(`\n📡 [HTTP REQUEST] ${req.method} ${req.url} (${new Date().toLocaleTimeString()})`);
-  }
+  const timeStr = new Date().toLocaleTimeString();
+  const summary = req.method === 'GET' ? '' : (req.body && Object.keys(req.body).length > 0 ? `| Payload: ${JSON.stringify(req.body).substring(0, 120)}...` : '');
+  console.log(`\n📡 [UI ACTION] ${req.method} ${req.originalUrl} (${timeStr}) ${summary}`);
   next();
 });
 
@@ -45,6 +45,8 @@ app.get('/api/health', (req, res) => {
     primaryProvider: process.env.PRIMARY_AI_PROVIDER || 'gemini',
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
     geminiModel: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+    sarvamConfigured: Boolean(process.env.SARVAM_API_KEY),
+    sarvamChatModel: process.env.SARVAM_CHAT_MODEL || 'sarvam-105b',
     supabaseActive: isSupabaseConfigured()
   });
 });
@@ -83,14 +85,17 @@ app.get('/api/test-models', async (req, res) => {
 // 2. Clear Supabase Database Tables Route
 app.delete('/api/clear', async (req, res) => {
   try {
+    console.log(`\n🧹 [DATABASE RESET] Received request to clear all Supabase tables...`);
     if (isSupabaseConfigured()) {
       await supabase.from('submissions').delete().neq('id', '');
       await supabase.from('assignments').delete().neq('id', '');
       await supabase.from('notifications').delete().neq('id', '');
       await supabase.from('textbook_embeddings').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     }
+    console.log(`✅ [DATABASE RESET] All Supabase tables cleaned.`);
     res.json({ success: true, message: 'All Supabase database records cleared clean.' });
   } catch (err: any) {
+    console.error('❌ Database Clear Error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -103,18 +108,24 @@ app.post('/api/rag/ingest', uploadDisk.any(), async (req, res) => {
     const targetClass = className || 'Grade 5 General Science';
     const targetTopic = topic || 'Chapter Assessment';
 
+    console.log(`\n📚 [KNOWLEDGE BASE INGESTION] Dispatched from UI`);
+    console.log(`   ├─ Class/Grade : "${targetClass}"`);
+    console.log(`   ├─ Topic/Title : "${targetTopic}"`);
+    console.log(`   └─ File Count  : ${uploadedFiles.length} file(s) (${uploadedFiles.map(f => f.originalname).join(', ')})`);
+
     if (uploadedFiles.length === 0) {
       return res.status(400).json({ success: false, message: 'No chapter documents or archives uploaded for ingestion.' });
     }
 
     const result = await ingestPdfDocument(uploadedFiles, targetClass, targetTopic);
+    console.log(`✅ [KNOWLEDGE BASE INGESTION COMPLETED] Indexed ${result.chunksCount} chunks into vector store.`);
     res.json({
       success: true,
       message: `Successfully ingested knowledge base into Supabase RAG (${result.chunksCount} vector chunk(s) indexed for ${targetClass}).`,
       chunksCount: result.chunksCount
     });
   } catch (err: any) {
-    console.error('RAG Ingestion Error:', err);
+    console.error('❌ RAG Ingestion Error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -128,13 +139,23 @@ app.post('/api/rag/generate', uploadDisk.any(), async (req, res) => {
     const targetTopic = topic || 'Chapter Assessment';
     const countVal = numQuestions ? parseInt(numQuestions, 10) : 5;
 
-    // Ingest uploaded PDF/ZIP/Image files into Supabase textbook_embeddings
-    await ingestPdfDocument(uploadedFiles, targetClass, targetTopic);
+    console.log(`\n🎯 [EXAM GENERATOR - RAG] Generating Question Paper`);
+    console.log(`   ├─ Subject/Class : "${targetClass}"`);
+    console.log(`   ├─ Topic Title   : "${targetTopic}"`);
+    console.log(`   ├─ Sub-Topics    : "${subTopicScope || 'All topics'}"`);
+    console.log(`   └─ Num Questions : ${countVal}`);
+
+    // Ingest uploaded PDF/ZIP/Image files into Supabase textbook_embeddings if any attached
+    if (uploadedFiles.length > 0) {
+      console.log(`   └─ Ingesting ${uploadedFiles.length} accompanying file(s) before generation...`);
+      await ingestPdfDocument(uploadedFiles, targetClass, targetTopic);
+    }
 
     const questions = await generateRagQuestions(targetTopic, targetClass, subjectLanguage, subTopicScope || '', countVal);
+    console.log(`✅ [EXAM GENERATOR COMPLETED] Generated ${questions.length} questions successfully.`);
     res.json({ success: true, questions });
   } catch (err: any) {
-    console.error('RAG Error:', err);
+    console.error('❌ RAG Generation Error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -143,6 +164,8 @@ app.post('/api/rag/generate', uploadDisk.any(), async (req, res) => {
 app.post('/api/rag/extract-questions-from-image', uploadDisk.any(), async (req, res) => {
   try {
     const uploadedFiles = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
+    console.log(`\n📸 [QUESTION PAPER PHOTO EXTRACT] Received ${uploadedFiles.length} photo(s) from UI`);
+
     if (uploadedFiles.length === 0) {
       return res.status(400).json({ success: false, message: 'No question paper photo uploaded.' });
     }
@@ -151,9 +174,10 @@ app.post('/api/rag/extract-questions-from-image', uploadDisk.any(), async (req, 
     const primaryMime = uploadedFiles[0]?.mimetype || 'image/jpeg';
 
     const questions = await extractQuestionsFromImage(imageBuffers, primaryMime);
+    console.log(`✅ [PHOTO EXTRACT COMPLETED] Successfully extracted ${questions.length} question(s) with benchmark keys.`);
     res.json({ success: true, questions });
   } catch (err: any) {
-    console.error('Photo Question Extraction Error:', err);
+    console.error('❌ Photo Question Extraction Error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -162,18 +186,31 @@ app.post('/api/rag/extract-questions-from-image', uploadDisk.any(), async (req, 
 // 4. Dispatch Assignment
 app.post('/api/assignments', async (req, res) => {
   try {
-    const { title, questions, className } = req.body;
+    const { title, questions, className, subject, language, difficulty, durationMinutes } = req.body;
     const id = 'assign-' + Date.now();
     const createdAt = new Date().toISOString();
     const titleVal = title || 'Daily Learning Assignment';
     const classVal = className || 'Grade 5 Science';
 
+    console.log(`\n📋 [ASSIGNMENT DISPATCH] Dispatching Assessment to Students`);
+    console.log(`   ├─ Assignment ID : "${id}"`);
+    console.log(`   ├─ Title         : "${titleVal}"`);
+    console.log(`   ├─ Subject/Class : "${subject || classVal}" (${classVal})`);
+    console.log(`   ├─ Questions     : ${(questions || []).length} question(s)`);
+    console.log(`   └─ Difficulty    : ${difficulty || 'Medium'} (${durationMinutes || 60} min)`);
+
+    console.log(`🧭 [MODEL ROUTER] Evaluating dynamic reasoning model for "${subject || classVal}"...`);
     const reasoningModel = await determineReasoningModel(classVal || titleVal, JSON.stringify(questions || []));
+    console.log(`   └─ Assigned Reasoning Model : "${reasoningModel}"`);
 
     const newAssignment = {
       id,
       title: titleVal,
       class_name: classVal,
+      subject: subject || classVal,
+      language: language || 'English',
+      difficulty: difficulty || 'Medium',
+      duration_minutes: Number(durationMinutes) || 60,
       questions_json: JSON.stringify(questions || []),
       reasoning_model: reasoningModel,
       status: 'dispatched',
@@ -184,12 +221,15 @@ app.post('/api/assignments', async (req, res) => {
       let { error: dbErr } = await supabase.from('assignments').insert([newAssignment]);
       
       if (dbErr) {
-        console.warn('Supabase DB Insert Error (retrying without reasoning_model):', dbErr.message);
-        // Fallback for legacy schema if reasoning_model column is not yet created
+        console.warn('⚠️ Supabase DB Insert Notice (retrying with legacy assignment schema):', dbErr.message);
         const legacyAssignment = { ...newAssignment };
         delete (legacyAssignment as any).reasoning_model;
+        delete (legacyAssignment as any).subject;
+        delete (legacyAssignment as any).language;
+        delete (legacyAssignment as any).difficulty;
+        delete (legacyAssignment as any).duration_minutes;
         const { error: retryErr } = await supabase.from('assignments').insert([legacyAssignment]);
-        if (retryErr) console.error('Supabase DB Insert Fallback Error:', retryErr.message);
+        if (retryErr) console.error('❌ Supabase DB Insert Fallback Error:', retryErr.message);
       }
 
       await supabase.from('notifications').insert([{
@@ -201,11 +241,47 @@ app.post('/api/assignments', async (req, res) => {
         timestamp: createdAt,
         student_name: 'Aarav & Alex'
       }]);
+      console.log(`   └─ WhatsApp notification inserted in Supabase`);
     }
 
-    res.json({ success: true, assignment: { id, title: titleVal, className: classVal, questions, status: 'dispatched', createdAt } });
+    console.log(`✅ [ASSIGNMENT DISPATCHED] ID: ${id} ready for student answer uploads.`);
+    res.json({ success: true, assignment: { id, title: titleVal, className: classVal, subject: subject || classVal, language: language || 'English', difficulty: difficulty || 'Medium', durationMinutes: Number(durationMinutes) || 60, questions, reasoningModel, status: 'dispatched', createdAt } });
   } catch (err: any) {
-    console.error('Assignment Error:', err);
+    console.error('❌ Assignment Error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 4b. Manage Subjects
+app.get('/api/subjects', async (req, res) => {
+  try {
+    if (!isSupabaseConfigured()) return res.json({ success: true, subjects: [] });
+    const { data, error } = await supabase.from('subjects').select('*').order('name');
+    if (error) throw error;
+    res.json({ success: true, subjects: data || [] });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/subjects', async (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    if (!name) return res.status(400).json({ success: false, message: 'Subject name is required.' });
+    console.log(`\n📚 [SUBJECTS] Adding new curriculum subject: "${name}"`);
+    const subject = {
+      id: `subject-${Date.now()}`,
+      name,
+      created_at: new Date().toISOString()
+    };
+    if (isSupabaseConfigured()) {
+      const { data, error } = await supabase.from('subjects').upsert(subject, { onConflict: 'name' }).select().single();
+      if (error) throw error;
+      console.log(`✅ [SUBJECTS] Successfully saved "${name}" to Supabase.`);
+      return res.json({ success: true, subject: data });
+    }
+    res.json({ success: true, subject });
+  } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -220,6 +296,10 @@ app.get('/api/assignments', async (req, res) => {
           id: r.id,
           title: r.title,
           className: r.class_name,
+          subject: r.subject,
+          language: r.language,
+          difficulty: r.difficulty,
+          durationMinutes: r.duration_minutes,
           questions: typeof r.questions_json === 'string' ? JSON.parse(r.questions_json || '[]') : r.questions_json,
           reasoningModel: r.reasoning_model,
           status: r.status,
@@ -276,13 +356,24 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
   try {
     const { assignmentId, studentName, selectedLanguage, className, subject } = req.body;
     const lang = selectedLanguage || 'English';
-    const name = studentName || 'Aarav Sharma';
+    const name = studentName || 'Student';
 
     const uploadedFiles = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
     const samplePaperUrls: string[] = [];
 
+    console.log(`\n===============================================================`);
+    console.log(`📥 [STUDENT SUBMISSION RECEIVED] Triggered from UI`);
+    console.log(`   ├─ Student Name  : "${name}"`);
+    console.log(`   ├─ Language      : "${lang}"`);
+    console.log(`   ├─ Target Subject: "${subject || 'Not specified'}"`);
+    console.log(`   ├─ Target Class  : "${className || 'Not specified'}"`);
+    console.log(`   ├─ Assignment ID : "${assignmentId || 'None (General Mode)'}"`);
+    console.log(`   └─ Attached Files: ${uploadedFiles.length} page(s) (${uploadedFiles.map(f => f.originalname || 'upload').join(', ')})`);
+    console.log(`===============================================================`);
+
     // Upload each image buffer to Supabase Storage Bucket
     if (isSupabaseConfigured() && uploadedFiles.length > 0) {
+      console.log(`☁️ [STAGE 1/4] Uploading ${uploadedFiles.length} page(s) to Supabase Storage ('student-submissions')...`);
       for (const fileObj of uploadedFiles) {
         try {
           const cloudUrl = await uploadImageToSupabase(fileObj.buffer, fileObj.originalname || 'submission.jpg', fileObj.mimetype || 'image/jpeg');
@@ -291,6 +382,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
           console.warn('⚠️ Supabase upload notice:', err);
         }
       }
+      console.log(`   └─ Uploaded ${samplePaperUrls.length} file(s) to Supabase Storage.`);
     }
 
     const imageBuffers = uploadedFiles.map(f => f.buffer);
@@ -303,6 +395,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
     let reasoningModel = 'gemini-3.6-flash';
 
     if (assignmentId && process.env.SUPABASE_URL && !process.env.SUPABASE_URL.includes('your-project')) {
+      console.log(`🔍 [STAGE 2/4] Looking up Assignment in Supabase: ID "${assignmentId}"...`);
       try {
         const { data: assignData } = await supabase.from('assignments').select('*').eq('id', assignmentId).single();
         if (assignData) {
@@ -316,6 +409,12 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
                 : assignData.questions_json;
             } catch (e) {}
           }
+          console.log(`   ├─ Matched Title : "${assignData.title}"`);
+          console.log(`   ├─ Matched Class : "${assignData.class_name}"`);
+          console.log(`   ├─ Model Routing : "${reasoningModel}"`);
+          console.log(`   └─ Rubric Context: ${assignedQuestions.length} benchmark question(s) found`);
+        } else {
+          console.log(`   └─ Assignment not found in DB. Using fallback class context.`);
         }
       } catch (e) {
         console.warn('Assignment lookup notice:', e);
@@ -323,18 +422,21 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
     }
 
     // Perform Vision LLM & Vector RAG evaluation across all uploaded paper pages
+    console.log(`🔍 [STAGE 3/4] Transcribing handwriting via OCR Agent (Lang: ${lang}, Subject: ${targetSubject})...`);
     let ocrText = '';
     let langCode = lang.substring(0, 3).toUpperCase();
     try {
-      const ocrResult = await performOcr(imageBuffers.length > 0 ? imageBuffers[0] : '', lang);
+      const ocrResult = await performOcr(imageBuffers.length > 0 ? imageBuffers[0] : '', lang, 'image/jpeg', targetSubject);
       ocrText = ocrResult.ocrText;
       langCode = ocrResult.langCode;
+      console.log(`   └─ OCR transcription completed (${ocrText.length} chars, LangCode: ${langCode})`);
     } catch (ocrErr) {
       console.warn('⚠️ OCR processing notice:', ocrErr);
       ocrText = '[Scanned handwritten paper upload]';
     }
 
-    // Evaluate all uploaded student paper pages in a SINGLE Gemini API call
+    console.log(`🧠 [STAGE 4/4] Evaluating responses against benchmark rubric via "${reasoningModel}"...`);
+    // Evaluate all uploaded student paper pages in a SINGLE Gemini/Sarvam call
     const pdfEval = await evaluateStudentAnswerAgainstPdf(
       ocrText,
       targetClassName,
@@ -347,6 +449,16 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
     const finalOcrText = pdfEval.ocrText || ocrText;
     const id = 'sub-' + Date.now();
     const submittedAt = new Date().toISOString();
+
+    console.log(`\n===============================================================`);
+    console.log(`🏆 [GRADING COMPLETE] Submission ID: "${id}"`);
+    console.log(`   ├─ Student       : "${name}"`);
+    console.log(`   ├─ Overall Score : ${pdfEval.score}%`);
+    console.log(`   ├─ Excelled Areas: ${(pdfEval.excelledAreas || []).join(', ') || 'None'}`);
+    console.log(`   ├─ Knowledge Gaps: ${(pdfEval.knowledgeGaps || []).join(', ') || 'None'}`);
+    console.log(`   ├─ Questions QA  : ${(pdfEval.questionEvaluations || []).length} items evaluated`);
+    console.log(`   └─ Socratic Hint : "${pdfEval.socraticHint || 'N/A'}"`);
+    console.log(`===============================================================\n`);
 
     const aiEvalData = {
       ocrText: finalOcrText,
@@ -380,14 +492,16 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
     if (isSupabaseConfigured()) {
       const { error: supaErr } = await supabase.from('submissions').insert([submissionPayload]);
       if (supaErr) {
-        console.warn('Supabase submission insert notice (retrying with legacy schema compatibility):', supaErr.message);
+        console.warn('⚠️ Supabase submission insert notice (retrying with legacy schema compatibility):', supaErr.message);
         // Fallback for legacy database schema without optional columns
         delete submissionPayload.sample_paper_urls;
         delete submissionPayload.ai_evaluation_json;
         const { error: retryErr } = await supabase.from('submissions').insert([submissionPayload]);
         if (retryErr) {
-          console.warn('Supabase fallback insert notice:', retryErr.message);
+          console.warn('❌ Supabase fallback insert notice:', retryErr.message);
         }
+      } else {
+        console.log(`💾 Stored submission "${id}" in Supabase DB.`);
       }
     }
 
@@ -408,6 +522,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
         knowledgeGaps: pdfEval.knowledgeGaps,
         feedback: pdfEval.feedback,
         socraticHint: pdfEval.socraticHint,
+        questionEvaluations: pdfEval.questionEvaluations,
         metrics: { accuracy: 0.94 }
       },
       status: 'pending_review',
@@ -416,8 +531,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
 
     res.json({ success: true, submission: newSubmission });
   } catch (err: any) {
-
-    console.error('Submission Error:', err);
+    console.error('❌ Submission Error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -576,6 +690,11 @@ app.post('/api/submissions/:id/approve', async (req, res) => {
     const { id } = req.params;
     const { feedback, socraticHint, score } = req.body;
 
+    console.log(`\n✍️ [TEACHER APPROVAL] Reviewing Submission: "${id}"`);
+    console.log(`   ├─ Approved Final Score: ${score}/100`);
+    console.log(`   ├─ Feedback Notes      : "${(feedback || '').substring(0, 80)}..."`);
+    console.log(`   └─ Socratic Hint       : "${(socraticHint || '').substring(0, 80)}..."`);
+
     if (isSupabaseConfigured()) {
       await supabase.from('submissions').update({
         status: 'approved',
@@ -595,11 +714,13 @@ app.post('/api/submissions/:id/approve', async (req, res) => {
         timestamp: new Date().toISOString(),
         student_name: subData?.student_name
       }]);
+      console.log(`   └─ Status updated to 'approved' & WhatsApp notification sent for ${subData?.student_name || 'Student'}`);
     }
 
+    console.log(`✅ [SUBMISSION APPROVED] ID: "${id}"`);
     res.json({ success: true, submission: { id, status: 'approved', finalScore: score, finalFeedback: feedback, finalHint: socraticHint } });
   } catch (err: any) {
-    console.error('Approve Error:', err);
+    console.error('❌ Approve Error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });

@@ -6,13 +6,13 @@ This update introduces a dynamic AI model routing system that intelligently sele
 ## Features Implemented
 
 ### 1. Subject-Aware AI Reasoning Routing (`src/services/aiService.ts`)
-- **Dynamic Selection**: The system now dynamically evaluates the complexity of a question paper to choose the best reasoning model (`gemini-2.5-flash`, `gemini-3.6-flash`, `gemini-3.6-standard`, or `gemini-3.6-pro`).
-- **Indic Language Support**: For `Hindi` and `Telugu` subjects, the system bypasses Gemini and routes directly to the `sarvam` (or `chandra`) models for reasoning evaluation.
+- **Dynamic Selection**: The system dynamically evaluates question-paper complexity to choose `gemini-3.5-flash`, `gemini-3.6-flash`, `gemini-3.6-standard`, or `gemini-3.6-pro`.
+- **Indic Language Support**: Hindi and Telugu assignments use Sarvam Vision for OCR and `sarvam-105b` for reasoning evaluation.
 
 ### 2. Subject-Aware OCR Extraction (`src/services/ocrService.ts`)
 - **Math**: Routes to `gemini-3.6-flash` for high-precision mathematical OCR extraction.
-- **Indic Languages (Hindi/Telugu)**: Routes to `sarvam` for OCR extraction.
-- **Other Subjects (Science, Social, English)**: Defaults to `gemini-2.5-flash` for fast and efficient OCR.
+- **Indic Languages (Hindi/Telugu)**: Routes to Sarvam Vision for OCR extraction.
+- **Other Subjects (Science, Social, English)**: Defaults to `gemini-3.5-flash` for fast and efficient OCR.
 
 ### 3. Database Schema Changes & Graceful Fallbacks (`src/index.ts`)
 - Introduced the `reasoning_model` field to the `assignments` creation payload to permanently store the chosen reasoning model for each assignment.
@@ -23,6 +23,10 @@ This update introduces a dynamic AI model routing system that intelligently sele
 > ```sql
 > ALTER TABLE assignments ADD COLUMN reasoning_model TEXT;
 > ```
+
+## Provider Configuration
+
+Set `SARVAM_API_KEY` for Hindi/Telugu OCR and grading. `SARVAM_CHAT_MODEL` is optional and defaults to `sarvam-105b`. Without a Sarvam key, Indic-language requests fail with an explicit configuration error instead of being sent to Gemini with an invalid model name.
 
 ## Integration Testing (`tests/routing.test.ts`)
 We have added a new automated integration testing suite in the `tests` directory to verify the routing algorithms and document ingestion pipeline without needing to spin up the entire server.
