@@ -190,6 +190,8 @@ export default function Dashboard() {
     try {
       const formData = new FormData();
       files.forEach(f => formData.append('questionPaper', f));
+      formData.append('subjectLanguage', subjectLanguage);
+      formData.append('className', className);
 
       const res = await fetch(`${API_BASE_URL}/api/rag/extract-questions-from-image`, {
         method: 'POST',

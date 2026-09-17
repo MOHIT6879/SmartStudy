@@ -186,8 +186,7 @@ export default function ReviewQueue() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
               {filteredSubmissions.map((sub) => {
                 const scoreVal = sub.finalScore ?? sub.aiEvaluation?.score ?? 5;
-                const maxScore = sub.maxScore || (scoreVal > 20 ? 100 : 5);
-                const pctVal = Math.round((scoreVal / maxScore) * 100);
+                const maxScore = sub.maxScore || sub.aiEvaluation?.maxScore || sub.assignment?.questions?.reduce((sum: number, question: any) => sum + (Number(question.marks) || 5), 0) || 5;
                 const isApproved = sub.status === 'approved';
 
                 return (
@@ -208,7 +207,7 @@ export default function ReviewQueue() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                       <div style={{ textAlign: 'right' }}>
                         <div style={{ fontWeight: 800, fontSize: '1rem', color: '#111827' }}>
-                          {scoreVal}/{maxScore} <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#64748B' }}>({pctVal}%)</span>
+                          {scoreVal}/{maxScore} marks
                         </div>
                       </div>
 

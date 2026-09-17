@@ -104,6 +104,8 @@ export default function ExamGenerator() {
     try {
       const formData = new FormData();
       files.forEach(f => formData.append('questionPaper', f));
+      formData.append('subject', subject);
+      formData.append('className', `Grade 11 ${subject}`);
 
       const res = await fetch(`${API_BASE_URL}/api/rag/extract-questions-from-image`, {
         method: 'POST',
@@ -114,7 +116,8 @@ export default function ExamGenerator() {
         setQuestions(prev => [...prev, ...data.questions.map((q: any, i: number) => ({
           id: `photo-${Date.now()}-${i}`,
           text: q.text || q,
-          marks: 5,
+          marks: Number(q.marks) || 0,
+          section: q.section || q.part || 'Questions',
           correctAnswer: q.correctAnswer || 'Extracted reference answer'
         }))]);
         alert(`✅ Extracted ${data.questions.length} questions from question paper photo!`);

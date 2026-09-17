@@ -13,6 +13,7 @@ export default function StudentPortal() {
   const [studentName, setStudentName] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [uploadError, setUploadError] = useState('');
   const [assignments, setAssignments] = useState<any[]>([]);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>('');
 
@@ -64,6 +65,7 @@ export default function StudentPortal() {
     }
 
     setIsUploading(true);
+    setUploadError('');
     const targetAssignmentId = selectedAssignmentId || assignments[0].id;
     const formData = new FormData();
     
@@ -87,11 +89,12 @@ export default function StudentPortal() {
         setUploadSuccess(true);
         setFiles([]);
       } else {
-        setUploadSuccess(true);
+        throw new Error(data.message || 'Submission processing failed.');
       }
     } catch (err) {
       console.error(err);
-      setUploadSuccess(true);
+      setUploadSuccess(false);
+      setUploadError(err instanceof Error ? err.message : 'Unable to submit the assignment.');
     } finally {
       setIsUploading(false);
     }
@@ -112,6 +115,11 @@ export default function StudentPortal() {
       </header>
 
       <div className="page-container">
+        {uploadError && (
+          <div className="badge badge-red" style={{ display: 'block', padding: '0.75rem 1rem', marginBottom: '1rem' }}>
+            {uploadError}
+          </div>
+        )}
         
         {uploadSuccess ? (
           <div className="m-card" style={{ textAlign: 'center', padding: '3.5rem 1.5rem', maxWidth: '600px', margin: '2rem auto' }}>

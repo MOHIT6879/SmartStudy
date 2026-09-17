@@ -195,6 +195,8 @@ export default function Overview() {
                     const maxScore = sub.maxScore || (scoreVal > 20 ? 100 : 5);
                     const pctVal = Math.round((scoreVal / maxScore) * 100);
                     const isApproved = sub.status === 'approved';
+                    const isProcessing = sub.status === 'processing';
+                    const isFailed = sub.status === 'failed';
 
                     return (
                       <Link 
@@ -214,12 +216,16 @@ export default function Overview() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                           <div style={{ textAlign: 'right' }}>
                             <div style={{ fontWeight: 800, fontSize: '0.9375rem', color: '#111827' }}>
-                              {scoreVal}/{maxScore} <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B' }}>({pctVal}%)</span>
+                              {isProcessing ? 'Grading...' : isFailed ? 'Not graded' : <>{scoreVal}/{maxScore} <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748B' }}>({pctVal}%)</span></>}
                             </div>
                           </div>
 
                           {isApproved ? (
                             <span className="badge badge-green">Approved</span>
+                          ) : isProcessing ? (
+                            <span className="badge badge-blue">Processing</span>
+                          ) : isFailed ? (
+                            <span className="badge badge-red">Failed</span>
                           ) : (
                             <span className="badge badge-amber">Needs review</span>
                           )}

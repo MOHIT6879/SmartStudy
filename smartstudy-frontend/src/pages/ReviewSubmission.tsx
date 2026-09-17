@@ -1,421 +1,94 @@
-import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { 
-  ArrowLeft, 
-  ZoomIn, 
-  ZoomOut, 
-  Maximize2, 
-  Save, 
-  Check, 
-  ShieldAlert
-} from 'lucide-react';
-import AgentPipelineStatus from '../components/AgentPipelineStatus';
+import { useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, Download, FileText, Maximize2, Minus, Plus, RefreshCw, Save, Sparkles } from 'lucide-react';
+import { Link, useParams } from 'react-router-dom';
 import { API_BASE_URL } from '../config/api';
+
+type ReviewQuestion = {
+  questionNo: string; section: string; questionText: string; benchmarkKey: string;
+  studentAnswerSnippet: string; scorePercent: number; marks: number;
+  earnedMarks: number; status: string; reasoning: string; feedback: string;
+};
+const marksOf = (question: any) => Number.isFinite(Number(question?.marks)) && Number(question.marks) >= 0 ? Number(question.marks) : 0;
 
 export default function ReviewSubmission() {
   const { id } = useParams<{ id: string }>();
-
   const [submission, setSubmission] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-
-  // Editable fields
+  const [questions, setQuestions] = useState<ReviewQuestion[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState(0);
   const [feedback, setFeedback] = useState('');
   const [hint, setHint] = useState('');
-  const [score, setScore] = useState(0);
-  const [maxScore, setMaxScore] = useState(100);
-  const [isApproved, setIsApproved] = useState(false);
-
-  // Image zoom and lightbox
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [isLightboxOpen, setIsLightboxOpen] = useState(false);
-  const [activePageIndex, setActivePageIndex] = useState(0);
-
-  // Question evaluations state
-  const [questionEvals, setQuestionEvals] = useState<any[]>([]);
+  const [zoom, setZoom] = useState(1);
+  const [page, setPage] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [approved, setApproved] = useState(false);
 
   useEffect(() => {
-    fetchSubmission();
+    fetch(`${API_BASE_URL}/api/submissions`).then((res) => res.json()).then((data) => {
+      const found = data.submissions?.find((item: any) => item.id === id);
+      if (!found) return;
+      const evaluations = found.aiEvaluation?.questionEvaluations || [];
+      const assigned = found.assignment?.questions || [];
+      const source = assigned.length > 0 ? assigned : evaluations;
+      setSubmission(found);
+      setFeedback(found.finalFeedback || found.aiEvaluation?.feedback || '');
+      setHint(found.finalHint || found.aiEvaluation?.socraticHint || '');
+      setApproved(found.status === 'approved');
+      setQuestions(source.map((question: any, index: number) => {
+        const evaluation = evaluations.find((item: any) => item.questionNo === `Q${index + 1}`) || evaluations[index] || {};
+        const marks = marksOf(question);
+        const scorePercent = Number(evaluation.scorePercent) || 0;
+        return {
+          questionNo: question.questionNo || question.number || `Q${index + 1}`,
+          section: question.section || question.part || question.sectionName || evaluation.section || 'Questions',
+          questionText: question.text || evaluation.questionText || `Question ${index + 1}`,
+          benchmarkKey: question.correctAnswer || question.rubricKey || evaluation.benchmarkKey || 'No benchmark key provided.',
+          studentAnswerSnippet: evaluation.studentAnswerSnippet || 'No answer detected in the scanned paper.',
+          scorePercent, marks,
+          earnedMarks: Number.isFinite(Number(evaluation.earnedMarks)) ? Number(evaluation.earnedMarks) : Math.round(marks * scorePercent) / 100,
+          status: evaluation.status || (scorePercent >= 90 ? 'Full Credit' : scorePercent > 0 ? 'Partial Credit' : 'Unrelated / No Credit'),
+          reasoning: evaluation.reasoning || 'No examiner note provided.',
+          feedback: evaluation.feedback || evaluation.reasoning || 'Review the benchmark key and add the missing concepts.'
+        };
+      }));
+    }).catch(console.error).finally(() => setLoading(false));
   }, [id]);
 
-  const fetchSubmission = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/submissions`);
-      const data = await res.json();
-      if (data.success && Array.isArray(data.submissions)) {
-        const found = data.submissions.find((s: any) => s.id === id);
-        if (found) {
-          setSubmission(found);
-          const currentScore = found.finalScore ?? found.aiEvaluation?.score ?? 0;
-          setScore(currentScore);
-          const max = found.maxScore || 100;
-          setMaxScore(max);
-          setFeedback(found.finalFeedback || found.aiEvaluation?.feedback || '');
-          setHint(found.finalHint || found.aiEvaluation?.socraticHint || '');
-          setIsApproved(found.status === 'approved');
-
-          // Initialize question breakdown
-          if (found.aiEvaluation?.questionEvaluations && Array.isArray(found.aiEvaluation.questionEvaluations)) {
-            setQuestionEvals(found.aiEvaluation.questionEvaluations);
-          } else {
-            setQuestionEvals([]);
-          }
-        }
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
+  const imageUrls = useMemo<string[]>(() => {
+    if (!submission) return [];
+    const urls = submission.samplePaperUrls || submission.sample_paper_urls;
+    if (Array.isArray(urls)) return urls;
+    return submission.samplePaperUrl ? [submission.samplePaperUrl] : [];
+  }, [submission]);
+  const totalMarks = questions.reduce((sum, question) => sum + question.marks, 0);
+  const totalEarned = questions.reduce((sum, question) => sum + question.earnedMarks, 0);
+  const current = questions[selectedIndex];
+  const updateCurrent = (changes: Partial<ReviewQuestion>) => {
+    setQuestions((items) => items.map((item, index) => index === selectedIndex ? { ...item, ...changes } : item));
   };
-
-  const handleApproveGrades = async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/submissions/${id}/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          feedback,
-          socraticHint: hint,
-          score
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setIsApproved(true);
-        alert('✅ Grades and feedback approved! Parent notification dispatched.');
-      }
-    } catch (err) {
-      console.error(err);
-      alert('Error approving submission.');
-    }
+  const approve = async () => {
+    const response = await fetch(`${API_BASE_URL}/api/submissions/${id}/approve`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ feedback, socraticHint: hint, score: Math.round(totalEarned * 100) / 100 })
+    });
+    if ((await response.json()).success) { setApproved(true); alert('Grades approved.'); }
   };
+  if (loading) return <div style={{ padding: '3rem', textAlign: 'center' }}>Loading review workspace...</div>;
+  if (!submission) return <div style={{ padding: '3rem', textAlign: 'center' }}><h2>Submission not found</h2><Link to="/submissions">Back to queue</Link></div>;
 
-  if (loading) {
-    return (
-      <div style={{ textAlign: 'center', padding: '4rem 1rem' }}>
-        <p style={{ color: '#64748B' }}>Loading submission…</p>
-      </div>
-    );
-  }
+  const groups = Array.from(new Map(questions.map((question) => [question.section, questions.filter((item) => item.section === question.section)])).entries())
+    .map(([label, items]) => ({ label, items }));
+  const studentName = submission.studentName || 'Student';
+  const title = submission.assignment?.title || submission.subject || 'Assessment';
 
-  if (!submission) {
-    return (
-      <div style={{ textAlign: 'center', padding: '4rem 1rem' }}>
-        <h2>Submission not found</h2>
-        <Link to="/submissions" className="btn btn-primary" style={{ marginTop: '1rem' }}>
-          Back to Queue
-        </Link>
-      </div>
-    );
-  }
-
-  const rawUrls = submission.samplePaperUrls || submission.sample_paper_urls;
-  const imageList: string[] = Array.isArray(rawUrls)
-    ? rawUrls
-    : (submission.samplePaperUrl || submission.sample_paper_url ? [submission.samplePaperUrl || submission.sample_paper_url] : []);
-
-  const activeImageUrl = imageList[activePageIndex];
-  const studentName = submission.studentName || submission.student_name || 'Unnamed student';
-  const subjectName = submission.subject || 'Unassigned subject';
-  const assessmentTitle = submission.assignment?.title || 'Untitled assessment';
-  const assessmentType = submission.assignment?.className || 'Unassigned class';
-  const percentScore = Math.round((score / maxScore) * 100);
-
-  return (
-    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
-      
-      {/* Lightbox Fullscreen Modal */}
-      {isLightboxOpen && (
-        <div 
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(11, 19, 43, 0.95)',
-            zIndex: 100,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '2rem'
-          }}
-          onClick={() => setIsLightboxOpen(false)}
-        >
-          <button 
-            onClick={() => setIsLightboxOpen(false)}
-            style={{
-              position: 'absolute',
-              top: '20px',
-              right: '24px',
-              background: 'white',
-              border: 'none',
-              borderRadius: '50%',
-              width: '36px',
-              height: '36px',
-              cursor: 'pointer',
-              fontWeight: 700
-            }}
-          >
-            ✕
-          </button>
-          {activeImageUrl ? <img src={activeImageUrl} alt="Full scan view" style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: '0.5rem' }} /> : <p style={{ color: 'white' }}>No scan image available.</p>}
-        </div>
-      )}
-
-      {/* Sticky Top Bar Banner */}
-      <header className="page-top-bar no-print">
-        <div className="page-top-bar-text">
-          <h1>{studentName}</h1>
-          <p>{subjectName} · {assessmentTitle} · {assessmentType}</p>
-        </div>
-        <div className="page-top-bar-actions">
-          <Link to="/submissions" className="btn btn-secondary">
-            <ArrowLeft className="size-4" />
-            <span>Queue</span>
-          </Link>
-          <button 
-            className="btn btn-success" 
-            onClick={handleApproveGrades}
-            disabled={isApproved}
-          >
-            <Check className="size-4" />
-            <span>{isApproved ? 'Approved' : 'Approve grades'}</span>
-          </button>
-        </div>
-      </header>
-
-      <div className="page-container">
-        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.6fr', gap: '1.5rem', alignItems: 'start' }}>
-          
-          {/* Left Column: Original Scan & 6-Agent Pipeline Log */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            
-            {/* Original Scan Card */}
-            <div className="m-card">
-              <div className="m-card-header" style={{ marginBottom: '0.75rem' }}>
-                <h3 className="m-card-title" style={{ fontSize: '1rem' }}>Original scan</h3>
-                <div style={{ display: 'flex', gap: '0.25rem' }}>
-                  <button 
-                    className="btn btn-outline btn-sm"
-                    onClick={() => setZoomLevel(prev => Math.max(0.7, prev - 0.2))}
-                    title="Zoom out"
-                  >
-                    <ZoomOut className="size-3.5" />
-                  </button>
-                  <button 
-                    className="btn btn-outline btn-sm"
-                    onClick={() => setZoomLevel(prev => Math.min(2.5, prev + 0.2))}
-                    title="Zoom in"
-                  >
-                    <ZoomIn className="size-3.5" />
-                  </button>
-                  <button 
-                    className="btn btn-outline btn-sm"
-                    onClick={() => setIsLightboxOpen(true)}
-                    title="Fullscreen"
-                  >
-                    <Maximize2 className="size-3.5" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Image Preview Box */}
-              <div 
-                style={{
-                  height: '380px',
-                  background: '#0F172A',
-                  borderRadius: '0.5rem',
-                  overflow: 'hidden',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  position: 'relative',
-                  border: '1px solid #E2E8F0',
-                  cursor: 'pointer'
-                }}
-                onClick={() => setIsLightboxOpen(true)}
-              >
-                {activeImageUrl ? (
-                  <img src={activeImageUrl} alt={`Scan of ${studentName}'s script`} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', transform: `scale(${zoomLevel})`, transition: 'transform 0.15s ease' }} />
-                ) : <p style={{ color: '#CBD5E1' }}>No scan image available.</p>}
-              </div>
-
-              {/* Multi-page Navigation */}
-              {imageList.length > 1 && (
-                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem', justifyContent: 'center' }}>
-                  {imageList.map((_, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => setActivePageIndex(idx)}
-                      className={`btn btn-sm ${activePageIndex === idx ? 'btn-primary' : 'btn-outline'}`}
-                    >
-                      Page {idx + 1}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* 6-Agent Pipeline Execution Card */}
-            <AgentPipelineStatus 
-              currentStep={isApproved ? 6 : 5}
-              subData={{
-                imageName: `Scan of ${studentName}'s script`,
-                blocksTranscribed: questionEvals.length,
-                subject: subjectName,
-                qaNote: hint,
-                status: isApproved ? 'approved' : 'pending_review'
-              }}
-            />
-
-          </div>
-
-          {/* Right Column: Total Score, Overall Feedback & Question Breakdowns */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-            
-            {/* Total Score Banner Card */}
-            <div className="m-card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1.25rem 1.5rem' }}>
-              <div>
-                <p style={{ fontSize: '0.75rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.06em', color: '#64748B', margin: 0 }}>
-                  Total
-                </p>
-                <p style={{ fontFamily: 'var(--font-heading)', fontSize: '1.75rem', fontWeight: 800, color: '#111827', margin: 0 }}>
-                  {score} / {maxScore}
-                </p>
-              </div>
-
-              <div>
-                <p style={{ fontSize: '0.75rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.06em', color: '#64748B', margin: 0 }}>
-                  Percent
-                </p>
-                <p style={{ fontFamily: 'var(--font-heading)', fontSize: '1.75rem', fontWeight: 800, color: '#2563EB', margin: 0 }}>
-                  {percentScore} %
-                </p>
-              </div>
-
-              <div>
-                {isApproved ? (
-                  <span className="badge badge-green" style={{ fontSize: '0.8125rem', padding: '0.35rem 0.85rem' }}>
-                    ● Approved
-                  </span>
-                ) : (
-                  <span className="badge badge-amber" style={{ fontSize: '0.8125rem', padding: '0.35rem 0.85rem' }}>
-                    ● Needs review
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Overall Feedback Card */}
-            <div className="m-card">
-              <h4 style={{ fontSize: '0.9375rem', fontWeight: 700, marginBottom: '0.625rem' }}>
-                Overall feedback
-              </h4>
-              <textarea 
-                className="form-textarea"
-                rows={2}
-                value={feedback}
-                onChange={(e) => setFeedback(e.target.value)}
-                style={{ fontSize: '0.875rem' }}
-              />
-
-              {/* QA Agent Inspection Callout */}
-              <div style={{ marginTop: '0.75rem', padding: '0.75rem 1rem', background: '#F8FAFC', borderRadius: '0.5rem', border: '1px solid #E2E8F0', fontSize: '0.8125rem' }}>
-                <strong style={{ color: '#1E293B', display: 'flex', alignItems: 'center', gap: '0.35rem', marginBottom: '0.2rem' }}>
-                  <ShieldAlert className="size-3.5 text-blue-600" />
-                  <span>QA agent:</span>
-                </strong>
-                <p style={{ margin: 0, color: '#475569', lineHeight: 1.45 }}>
-                  {hint}
-                </p>
-              </div>
-            </div>
-
-            {/* Question Breakdown Cards */}
-            {questionEvals.map((q, idx) => (
-              <div key={idx} className="m-card">
-                
-                {/* Question Header */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <span style={{ fontWeight: 800, color: '#2563EB', background: '#EFF6FF', padding: '0.2rem 0.5rem', borderRadius: '0.25rem', fontSize: '0.8125rem' }}>
-                      Q {q.questionNumber || idx + 1}
-                    </span>
-                    <span style={{ fontWeight: 700, fontSize: '0.9375rem', color: '#111827' }}>
-                      {q.questionText}
-                    </span>
-                  </div>
-                  <span className="badge badge-green">
-                    OCR {q.ocrConfidence || 98}%
-                  </span>
-                </div>
-
-                {/* Extracted Handwriting Box */}
-                <div style={{ marginBottom: '0.75rem' }}>
-                  <p style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748B', marginBottom: '0.35rem' }}>
-                    Extracted handwriting
-                  </p>
-                  <div style={{ padding: '0.75rem 1rem', background: '#F8FAFC', borderRadius: '0.5rem', border: '1px solid #E2E8F0', fontSize: '0.8125rem', color: '#334155', lineHeight: 1.5, maxHeight: '160px', overflowY: 'auto' }}>
-                    {q.ocrText}
-                  </div>
-                </div>
-
-                {/* Knowledge Reference Match */}
-                <div style={{ marginBottom: '0.75rem', padding: '0.5rem 0.75rem', background: '#EFF6FF', borderRadius: '0.375rem', border: '1px solid #BFDBFE', fontSize: '0.78rem', color: '#1E40AF' }}>
-                  <strong>Reference Key: </strong> {q.referenceRubric}
-                </div>
-
-                {/* Score & Feedback Inputs */}
-                <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '0.75rem', alignItems: 'center' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#64748B', marginBottom: '0.25rem' }}>
-                      Mark / {q.maxMarks || 5}
-                    </label>
-                    <input 
-                      type="number" 
-                      className="form-input"
-                      value={score}
-                      onChange={(e) => setScore(Number(e.target.value))}
-                      style={{ fontWeight: 700, fontSize: '1rem' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#64748B', marginBottom: '0.25rem' }}>
-                      Feedback to student
-                    </label>
-                    <input 
-                      type="text" 
-                      className="form-input"
-                      value={q.studentFeedback || feedback}
-                      onChange={(e) => {
-                        const updated = [...questionEvals];
-                        updated[idx].studentFeedback = e.target.value;
-                        setQuestionEvals(updated);
-                        setFeedback(e.target.value);
-                      }}
-                    />
-                  </div>
-                </div>
-
-                {/* Save Mark Button */}
-                <div style={{ marginTop: '0.75rem', display: 'flex', justifyContent: 'flex-end' }}>
-                  <button 
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => alert(`Mark ${score}/${maxScore} updated for Question ${q.questionNumber || idx + 1}`)}
-                  >
-                    <Save className="size-3.5" />
-                    <span>Save mark</span>
-                  </button>
-                </div>
-
-              </div>
-            ))}
-
-          </div>
-
-        </div>
-      </div>
+  return <div className="review-workspace">
+    <header className="review-header">
+      <div className="review-student"><Link to="/submissions" title="Back to review queue"><ArrowLeft size={21} /></Link><div><h1>{studentName}</h1><p>Roll: {submission.rollNumber || '02'} • {title}</p></div></div>
+      <div className="review-header-actions"><span><FileText size={15} /> Question Paper</span><span><FileText size={15} /> Answer Key</span><span className="review-lenient">♡ Lenient</span><strong>Total: {totalEarned.toFixed(2)} / {totalMarks}</strong><button className="btn btn-primary" onClick={approve} disabled={approved}>{approved ? 'Approved' : 'Approve'}</button></div>
+    </header>
+    <div className="review-columns">
+      <aside className="review-questions"><h3>QUESTIONS</h3>{groups.map((group) => <div className="question-group" key={group.label}><div className="question-group-header"><span>{group.label}<small>{group.items.length} questions</small></span><small>{group.items.reduce((sum, q) => sum + q.earnedMarks, 0).toFixed(2)}/{group.items.reduce((sum, q) => sum + q.marks, 0)}</small></div>{group.items.map((question) => { const index = questions.indexOf(question); return <button className={index === selectedIndex ? 'question-link selected' : 'question-link'} key={question.questionNo} onClick={() => setSelectedIndex(index)}><b>{question.questionNo}</b><span>{question.earnedMarks.toFixed(2)}/{question.marks}</span></button>; })}</div>)}</aside>
+      <main className="review-sheet"><div className="review-toolbar"><strong><FileText size={16} /> Answer Sheet</strong><div><button title="Zoom out" onClick={() => setZoom(Math.max(.7, zoom - .1))}><Minus size={16} /></button><button title="Zoom in" onClick={() => setZoom(Math.min(2, zoom + .1))}><Plus size={16} /></button><button title="Reset zoom" onClick={() => setZoom(1)}><RefreshCw size={16} /></button><button title="Open full size" onClick={() => imageUrls[page] && window.open(imageUrls[page], '_blank')}><Maximize2 size={16} /></button><button title="Download" onClick={() => imageUrls[page] && window.open(imageUrls[page], '_blank')}><Download size={16} /></button></div></div><div className="review-image">{imageUrls[page] ? <img src={imageUrls[page]} alt="Student answer sheet" style={{ transform: `scale(${zoom})` }} /> : <p>No answer sheet image available.</p>}</div>{imageUrls.length > 1 && <div className="review-pages">{imageUrls.map((_, index) => <button className={page === index ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm'} key={index} onClick={() => setPage(index)}>Page {index + 1}</button>)}</div>}</main>
+      <section className="review-detail">{current ? <><div className="review-card"><div className="review-question-title"><div><h2>{current.questionNo}</h2><p>{current.questionText}</p></div><span>{current.marks} marks</span></div></div><div className="review-card"><h3><Sparkles size={16} /> AI Evaluation</h3><p>{current.feedback}</p><p className="review-success">✓ {current.status}</p><p className="review-note">{current.reasoning}</p></div><div className="review-card review-comparison"><div><strong>Benchmark reference key</strong><p>{current.benchmarkKey}</p></div><div><strong>Student answer</strong><p>{current.studentAnswerSnippet}</p></div></div><div className="review-card"><div className="review-card-heading"><h3>Marks</h3><span>AI: {current.earnedMarks.toFixed(2)} / {current.marks}</span></div><div className="marks-input"><input aria-label="Earned marks" type="number" min="0" max={current.marks} step="0.25" value={current.earnedMarks} onChange={(event) => updateCurrent({ earnedMarks: Math.min(current.marks, Math.max(0, Number(event.target.value) || 0)) })} /><strong>/ {current.marks}</strong></div><button className="btn btn-outline full-button" onClick={() => alert('Marks are included when you approve the submission.')}><Save size={16} /> Save Marks</button></div><div className="review-card"><h3>Overall feedback</h3><textarea className="form-textarea" rows={3} value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="Add teacher feedback" /><textarea className="form-textarea" rows={2} value={hint} onChange={(event) => setHint(event.target.value)} placeholder="Socratic hint" /></div></> : <div className="review-card">No question-level evaluation is available.</div>}</section>
     </div>
-  );
+  </div>;
 }
