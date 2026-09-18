@@ -433,7 +433,12 @@ export async function evaluateStudentAnswerAgainstPdf(
   } catch (evaluationError) {
     if (reasoningModel !== 'sarvam') throw evaluationError;
     console.warn('⚠️ [EVALUATION] Sarvam structured evaluation failed; using Gemini fallback:', evaluationError);
-    visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], 'gemini-3.6-flash', language, ocrText);
+    try {
+      visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], 'gemini-3.6-flash', language, ocrText);
+    } catch (geminiError) {
+      console.warn('⚠️ [EVALUATION] Gemini 3.6 fallback failed; retrying Gemini 3.5:', geminiError);
+      visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], 'gemini-3.5-flash', language, ocrText);
+    }
   }
 
   return {

@@ -154,7 +154,7 @@ export default function StudentPortal() {
                 <label className="form-label">Select Assigned Test / Homework</label>
                 {assignments.length === 0 ? (
                   <div style={{ padding: '0.75rem', background: '#F8FAFC', borderRadius: '0.5rem', border: '1px solid #E2E8F0', fontSize: '0.85rem', color: '#64748B' }}>
-                    Standard Homework Test (Physics & Science)
+                    No assigned tests are available. Ask your teacher to dispatch an assignment first.
                   </div>
                 ) : (
                   <select 

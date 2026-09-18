@@ -311,6 +311,7 @@ export default function ExamGenerator() {
                   <input 
                     type="file" 
                     accept="image/*" 
+                    multiple
                     style={{ display: 'none' }}
                     onChange={handlePhotoUpload}
                     disabled={isExtractingPhoto}

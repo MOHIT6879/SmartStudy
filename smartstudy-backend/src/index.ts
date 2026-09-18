@@ -360,6 +360,10 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
     const lang = selectedLanguage || 'English';
     const name = studentName || 'Student';
 
+    if (!assignmentId) {
+      return res.status(400).json({ success: false, message: 'Select an assigned test before submitting.' });
+    }
+
     const uploadedFiles = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
     const samplePaperUrls: string[] = [];
 
@@ -394,7 +398,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
     let targetClassName = className || 'Grade 5 General Science';
     let targetSubject = subject || 'General Science';
     let assignedQuestions: any[] = [];
-    let reasoningModel = 'gemini-3.6-flash';
+    let reasoningModel = process.env.PRIMARY_AI_PROVIDER?.toLowerCase() === 'sarvam' ? 'sarvam' : 'gemini-3.6-flash';
 
     if (assignmentId && process.env.SUPABASE_URL && !process.env.SUPABASE_URL.includes('your-project')) {
       console.log(`🔍 [STAGE 2/4] Looking up Assignment in Supabase: ID "${assignmentId}"...`);
@@ -403,7 +407,9 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
         if (assignData) {
           if (assignData.class_name) targetClassName = assignData.class_name;
           if (assignData.title) targetSubject = assignData.title;
-          if (assignData.reasoning_model) reasoningModel = assignData.reasoning_model;
+          if (process.env.PRIMARY_AI_PROVIDER?.toLowerCase() !== 'sarvam' && assignData.reasoning_model) {
+            reasoningModel = assignData.reasoning_model;
+          }
           if (assignData.questions_json) {
             try {
               assignedQuestions = typeof assignData.questions_json === 'string'
@@ -416,7 +422,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
           console.log(`   ├─ Model Routing : "${reasoningModel}"`);
           console.log(`   └─ Rubric Context: ${assignedQuestions.length} benchmark question(s) found`);
         } else {
-          console.log(`   └─ Assignment not found in DB. Using fallback class context.`);
+          throw new Error(`Assignment '${assignmentId}' was not found. Refresh the assignment list and select a valid assignment.`);
         }
       } catch (e) {
         console.warn('Assignment lookup notice:', e);
@@ -455,10 +461,10 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
     let ocrText = '';
     let langCode = lang.substring(0, 3).toUpperCase();
     try {
-      const ocrResult = await performOcr(imageBuffers.length > 0 ? imageBuffers[0] : '', lang, 'image/jpeg', targetSubject);
-      ocrText = ocrResult.ocrText;
-      langCode = ocrResult.langCode;
-      console.log(`   └─ OCR transcription completed (${ocrText.length} chars, LangCode: ${langCode})`);
+      const ocrResults = await Promise.all(imageBuffers.map((buffer) => performOcr(buffer, lang, primaryFile?.mimetype || 'image/jpeg', targetSubject)));
+      ocrText = ocrResults.map((result, index) => `--- PAGE ${index + 1} ---\n${result.ocrText}`).join('\n\n');
+      langCode = ocrResults[0]?.langCode || langCode;
+      console.log(`   └─ OCR transcription completed across ${ocrResults.length} page(s) (${ocrText.length} chars, LangCode: ${langCode})`);
     } catch (ocrErr) {
       console.warn('⚠️ OCR processing notice:', ocrErr);
       ocrText = '[Scanned handwritten paper upload]';
