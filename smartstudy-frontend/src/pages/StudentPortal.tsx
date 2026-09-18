@@ -43,30 +43,27 @@ export default function StudentPortal() {
       const data = await res.json();
       if (data.success && Array.isArray(data.assignments)) {
         setAssignments(data.assignments);
-        if (data.assignments.length > 0 && !selectedAssignmentId) {
-          selectAssignment(data.assignments[0]);
-        }
       }
     } catch (err) {
       console.error(err);
     }
   };
 
-  const activeAssignment = assignments.find(a => a.id === selectedAssignmentId) || (assignments.length > 0 ? assignments[0] : null);
+  const activeAssignment = assignments.find(a => a.id === selectedAssignmentId) || null;
 
   const handleUpload = async () => {
     if (files.length === 0) {
       alert('Please upload photo(s) of your handwritten answer sheet.');
       return;
     }
-    if (!selectedAssignmentId && assignments.length === 0) {
-      alert('No assignment is available yet. Ask your teacher to dispatch one first.');
+    if (!selectedAssignmentId || !activeAssignment) {
+      alert('Select the assignment that matches your answer sheet before submitting.');
       return;
     }
 
     setIsUploading(true);
     setUploadError('');
-    const targetAssignmentId = selectedAssignmentId || assignments[0].id;
+    const targetAssignmentId = selectedAssignmentId;
     const formData = new FormData();
     
     files.forEach((file) => {
@@ -76,7 +73,7 @@ export default function StudentPortal() {
     formData.append('assignmentId', targetAssignmentId);
     formData.append('studentName', studentName);
     formData.append('selectedLanguage', selectedLanguage);
-    formData.append('subject', activeAssignment?.title || 'Class Test');
+    formData.append('subject', activeAssignment?.subject || activeAssignment?.className || 'Class Test');
     formData.append('className', activeAssignment?.className || 'Physics');
 
     try {
@@ -165,12 +162,19 @@ export default function StudentPortal() {
                       selectAssignment(found);
                     }}
                   >
+                    <option value="" disabled>Select the matching assignment</option>
                     {assignments.map((a) => (
                       <option key={a.id} value={a.id}>
-                        {a.title} ({a.className || 'General'})
+                        {a.title} · {a.subject || a.className || 'General'}
                       </option>
                     ))}
                   </select>
+                )}
+                {activeAssignment && (
+                  <div style={{ marginTop: '0.65rem', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid #BFDBFE', background: '#EFF6FF', color: '#1E3A8A', fontSize: '0.8125rem' }}>
+                    <strong>Submitting to:</strong> {activeAssignment.title} · {activeAssignment.subject || activeAssignment.className}
+                    <span style={{ display: 'block', marginTop: '0.2rem' }}>{activeAssignment.questions?.length || 0} questions · {activeAssignment.questions?.reduce((sum: number, question: any) => sum + (Number(question.marks) || 0), 0) || 0} marks</span>
+                  </div>
                 )}
               </div>
 
@@ -241,7 +245,7 @@ export default function StudentPortal() {
                   className="btn btn-primary"
                   style={{ width: '100%', padding: '0.75rem' }}
                   onClick={handleUpload}
-                  disabled={isUploading}
+                  disabled={isUploading || !selectedAssignmentId}
                 >
                   {isUploading ? (
                     <>

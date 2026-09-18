@@ -93,18 +93,37 @@ function languageCode(languageName: string): string {
 }
 
 export async function performSarvamVisionOcr(
-  imageBuffer: Buffer,
-  mimeType: string,
+  imageBuffer: Buffer | Buffer[],
+  mimeType: string | string[],
   languageName: string
 ): Promise<string | null> {
-  const extension = mimeType.includes('png') ? 'png' : mimeType.includes('pdf') ? 'pdf' : 'jpg';
+  const buffers = Array.isArray(imageBuffer) ? imageBuffer : [imageBuffer];
+  const mimeTypes = Array.isArray(mimeType) ? mimeType : buffers.map(() => mimeType);
+  if (buffers.length === 0 || buffers.length > 10) {
+    throw new Error('Sarvam Vision accepts between 1 and 10 pages per document job.');
+  }
+
+  let uploadBuffer = buffers[0];
+  let uploadMimeType = mimeTypes[0] || 'image/jpeg';
+  let uploadName = uploadMimeType.includes('png') ? 'answer-sheet.png' : uploadMimeType.includes('pdf') ? 'answer-sheet.pdf' : 'answer-sheet.jpg';
+  if (buffers.length > 1) {
+    const zip = new AdmZip();
+    buffers.forEach((buffer, index) => {
+      const pageMime = mimeTypes[index] || 'image/jpeg';
+      const extension = pageMime.includes('png') ? 'png' : 'jpg';
+      zip.addFile(`page-${String(index + 1).padStart(3, '0')}.${extension}`, buffer);
+    });
+    uploadBuffer = zip.toBuffer();
+    uploadMimeType = 'application/zip';
+    uploadName = 'answer-sheets.zip';
+  }
   const langCode = languageCode(languageName);
   const formData = new FormData();
-  formData.append('file', new Blob([new Uint8Array(imageBuffer)], { type: mimeType }), `answer-sheet.${extension}`);
+  formData.append('file', new Blob([new Uint8Array(uploadBuffer)], { type: uploadMimeType }), uploadName);
   formData.append('language', langCode);
   formData.append('output_format', 'md');
 
-  console.log(`🇮🇳 [SARVAM VISION OCR] Creating DocAI digitize job (${imageBuffer.length} bytes, Lang: ${langCode})...`);
+  console.log(`🇮🇳 [SARVAM VISION OCR] Creating DocAI digitize job (${buffers.length} page(s), ${uploadBuffer.length} bytes, Lang: ${langCode})...`);
 
   const createResponse = await fetch(`${SARVAM_API_BASE_URL}/doc-ai/v1/job/digitise`, {
     method: 'POST',

@@ -3,7 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 
 import { supabase, uploadImageToSupabase } from './db/supabase.js';
-import { performOcr } from './services/ocrService.js';
+import { performOcr, performOcrPages } from './services/ocrService.js';
 import { generateRagQuestions, ingestPdfDocument, evaluateStudentAnswerAgainstPdf } from './services/ragService.js';
 import { extractQuestionsFromImage, determineReasoningModel } from './services/aiService.js';
 import { uploadDisk, uploadsDir } from './middleware/upload.js';
@@ -406,7 +406,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
         const { data: assignData } = await supabase.from('assignments').select('*').eq('id', assignmentId).single();
         if (assignData) {
           if (assignData.class_name) targetClassName = assignData.class_name;
-          if (assignData.title) targetSubject = assignData.title;
+          targetSubject = assignData.subject || assignData.class_name || targetSubject;
           if (process.env.PRIMARY_AI_PROVIDER?.toLowerCase() !== 'sarvam' && assignData.reasoning_model) {
             reasoningModel = assignData.reasoning_model;
           }
@@ -417,6 +417,9 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
                 : assignData.questions_json;
             } catch (e) {}
           }
+          if (!Array.isArray(assignedQuestions) || assignedQuestions.length === 0) {
+            throw new Error(`Assignment '${assignmentId}' has no valid questions. Ask the teacher to extract and verify the question paper again.`);
+          }
           console.log(`   ├─ Matched Title : "${assignData.title}"`);
           console.log(`   ├─ Matched Class : "${assignData.class_name}"`);
           console.log(`   ├─ Model Routing : "${reasoningModel}"`);
@@ -425,7 +428,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
           throw new Error(`Assignment '${assignmentId}' was not found. Refresh the assignment list and select a valid assignment.`);
         }
       } catch (e) {
-        console.warn('Assignment lookup notice:', e);
+        throw new Error(e instanceof Error ? e.message : `Assignment '${assignmentId}' could not be loaded.`);
       }
     }
 
@@ -461,13 +464,20 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
     let ocrText = '';
     let langCode = lang.substring(0, 3).toUpperCase();
     try {
-      const ocrResults = await Promise.all(imageBuffers.map((buffer) => performOcr(buffer, lang, primaryFile?.mimetype || 'image/jpeg', targetSubject)));
-      ocrText = ocrResults.map((result, index) => `--- PAGE ${index + 1} ---\n${result.ocrText}`).join('\n\n');
-      langCode = ocrResults[0]?.langCode || langCode;
-      console.log(`   └─ OCR transcription completed across ${ocrResults.length} page(s) (${ocrText.length} chars, LangCode: ${langCode})`);
+      const ocrResult = await performOcrPages(imageBuffers, lang, uploadedFiles.map((file) => file.mimetype || 'image/jpeg'), targetSubject);
+      ocrText = ocrResult.ocrText;
+      langCode = ocrResult.langCode;
+      console.log(`   └─ OCR transcription completed across ${imageBuffers.length} page(s) (${ocrText.length} chars, LangCode: ${langCode})`);
+
     } catch (ocrErr) {
       console.warn('⚠️ OCR processing notice:', ocrErr);
       ocrText = '[Scanned handwritten paper upload]';
+    }
+
+    const detectedSubject = ocrText.match(/\bsubject\s*[:\-]?\s*(physics|chemistry|mathematics|maths|psychology|biology|english)\b/i)?.[1]?.toLowerCase();
+    const expectedSubject = targetSubject.toLowerCase();
+    if (detectedSubject && !expectedSubject.includes(detectedSubject) && !(detectedSubject === 'maths' && expectedSubject.includes('math'))) {
+      throw new Error(`The uploaded paper appears to be ${detectedSubject}, but the selected assignment is ${targetSubject}. Select the matching assignment and submit again.`);
     }
 
     console.log(`🧠 [STAGE 4/4] Evaluating responses against benchmark rubric via "${reasoningModel}"...`);
@@ -502,6 +512,9 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
       knowledgeGaps: pdfEval.knowledgeGaps,
       feedback: pdfEval.feedback,
       socraticHint: pdfEval.socraticHint,
+      evaluationProvider: pdfEval.evaluationProvider,
+      evaluationStatus: pdfEval.evaluationStatus,
+      fallbackReason: pdfEval.fallbackReason,
       questionEvaluations: pdfEval.questionEvaluations
     };
 
@@ -512,8 +525,11 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
       max_score: pdfEval.maxScore,
       feedback: pdfEval.feedback,
       socratic_hint: pdfEval.socraticHint,
+      evaluation_provider: pdfEval.evaluationProvider,
+      evaluation_status: pdfEval.evaluationStatus,
+      fallback_reason: pdfEval.fallbackReason || null,
       ai_evaluation_json: JSON.stringify(aiEvalData),
-      status: 'pending_review'
+      status: pdfEval.evaluationStatus === 'manual_review' ? 'manual_review' : 'pending_review'
     };
 
     if (isSupabaseConfigured()) {
@@ -521,6 +537,9 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
       if (updateError) {
         console.warn('⚠️ Supabase submission update notice (retrying with legacy schema compatibility):', updateError.message);
         delete evaluationUpdate.ai_evaluation_json;
+        delete evaluationUpdate.evaluation_provider;
+        delete evaluationUpdate.evaluation_status;
+        delete evaluationUpdate.fallback_reason;
         ({ error: updateError } = await supabase.from('submissions').update(evaluationUpdate).eq('id', id));
       }
       if (updateError) throw new Error(`Could not save submission evaluation: ${updateError.message}`);
@@ -545,10 +564,13 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
         knowledgeGaps: pdfEval.knowledgeGaps,
         feedback: pdfEval.feedback,
         socraticHint: pdfEval.socraticHint,
+        evaluationProvider: pdfEval.evaluationProvider,
+        evaluationStatus: pdfEval.evaluationStatus,
+        fallbackReason: pdfEval.fallbackReason,
         questionEvaluations: pdfEval.questionEvaluations,
         metrics: { accuracy: 0.94 }
       },
-      status: 'pending_review',
+      status: pdfEval.evaluationStatus === 'manual_review' ? 'manual_review' : 'pending_review',
       submittedAt
     };
 
@@ -694,6 +716,10 @@ app.get('/api/submissions', async (req, res) => {
             finalScore: r.final_score,
             finalFeedback: r.final_feedback,
             finalHint: r.final_hint,
+            finalEvaluation: r.final_evaluation_json,
+            evaluationProvider: r.evaluation_provider,
+            evaluationStatus: r.evaluation_status,
+            fallbackReason: r.fallback_reason,
             aiEvaluation: parsedAiEval || {
               ocrText: r.ocr_text,
               score: r.score,
@@ -719,7 +745,7 @@ app.get('/api/submissions', async (req, res) => {
 app.post('/api/submissions/:id/approve', async (req, res) => {
   try {
     const { id } = req.params;
-    const { feedback, socraticHint, score } = req.body;
+    const { feedback, socraticHint, score, questionEvaluations } = req.body;
 
     console.log(`\n✍️ [TEACHER APPROVAL] Reviewing Submission: "${id}"`);
     console.log(`   ├─ Approved Final Score: ${score} marks`);
@@ -731,7 +757,8 @@ app.post('/api/submissions/:id/approve', async (req, res) => {
         status: 'approved',
         final_score: score,
         final_feedback: feedback,
-        final_hint: socraticHint
+        final_hint: socraticHint,
+        final_evaluation_json: Array.isArray(questionEvaluations) ? questionEvaluations : null
       }).eq('id', id);
 
       const { data: subData } = await supabase.from('submissions').select('student_name').eq('id', id).single();

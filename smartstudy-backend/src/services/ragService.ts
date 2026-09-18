@@ -24,6 +24,9 @@ export interface EvaluationResult {
   knowledgeGaps: string[];
   feedback: string;
   socraticHint: string;
+  evaluationProvider: 'sarvam' | 'gemini-3.6-flash' | 'gemini-3.5-flash' | 'manual';
+  evaluationStatus: 'completed' | 'fallback_completed' | 'manual_review';
+  fallbackReason?: string;
 }
 
 // In-memory cache for uploaded textbook text
@@ -428,16 +431,51 @@ export async function evaluateStudentAnswerAgainstPdf(
 
   // Use Google Gemini 3.6 Vision API to perform OCR transcription and contextual RAG evaluation with assigned questions
   let visionRes;
+  let evaluationProvider: EvaluationResult['evaluationProvider'] = reasoningModel === 'sarvam' ? 'sarvam' : 'gemini-3.6-flash';
+  let evaluationStatus: EvaluationResult['evaluationStatus'] = 'completed';
+  let fallbackReason: string | undefined;
   try {
     visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], reasoningModel, language, ocrText);
   } catch (evaluationError) {
     if (reasoningModel !== 'sarvam') throw evaluationError;
     console.warn('⚠️ [EVALUATION] Sarvam structured evaluation failed; using Gemini fallback:', evaluationError);
+    fallbackReason = evaluationError instanceof Error ? evaluationError.message : 'Sarvam evaluation failed.';
+    evaluationStatus = 'fallback_completed';
+    evaluationProvider = 'gemini-3.6-flash';
     try {
       visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], 'gemini-3.6-flash', language, ocrText);
     } catch (geminiError) {
       console.warn('⚠️ [EVALUATION] Gemini 3.6 fallback failed; retrying Gemini 3.5:', geminiError);
-      visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], 'gemini-3.5-flash', language, ocrText);
+      evaluationProvider = 'gemini-3.5-flash';
+      try {
+        visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], 'gemini-3.5-flash', language, ocrText);
+      } catch (finalError) {
+        console.error('❌ [EVALUATION] All AI evaluation providers failed; routing to manual review:', finalError);
+        evaluationProvider = 'manual';
+        evaluationStatus = 'manual_review';
+        const manualQuestions = (assignedQuestions || []).map((question, index) => ({
+          questionNo: `Q${index + 1}`,
+          questionText: question.text,
+          benchmarkKey: question.correctAnswer || question.rubricKey || 'Teacher review required.',
+          studentAnswerSnippet: 'OCR is available for teacher review.',
+          scorePercent: 0,
+          marks: Number(question.marks) || 0,
+          earnedMarks: 0,
+          status: 'Manual Review Required',
+          reasoning: 'Automated evaluation providers were temporarily unavailable.',
+          feedback: 'Assign marks manually using the OCR transcription and scanned answer sheet.'
+        }));
+        visionRes = {
+          ocrText,
+          score: 0,
+          maxScore: manualQuestions.reduce((total, question) => total + question.marks, 0),
+          excelledAreas: [],
+          knowledgeGaps: [],
+          feedback: 'Automated evaluation is unavailable. This submission requires manual teacher review.',
+          socraticHint: '',
+          questionEvaluations: manualQuestions
+        };
+      }
     }
   }
 
@@ -449,6 +487,9 @@ export async function evaluateStudentAnswerAgainstPdf(
     knowledgeGaps: visionRes.knowledgeGaps,
     feedback: visionRes.feedback,
     socraticHint: visionRes.socraticHint,
+    evaluationProvider,
+    evaluationStatus,
+    fallbackReason,
     questionEvaluations: visionRes.questionEvaluations
   };
 }

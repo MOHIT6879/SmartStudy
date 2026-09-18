@@ -7,6 +7,41 @@ export interface OcrResult {
   langCode: string;
 }
 
+export async function performOcrPages(
+  buffers: Buffer[],
+  languageName: string = 'English',
+  mimeTypes: string[] = [],
+  subject?: string
+): Promise<OcrResult> {
+  if (buffers.length === 0) throw new Error('No answer-sheet pages were provided for OCR.');
+  if (buffers.length > 10) throw new Error('A maximum of 10 answer-sheet pages can be processed at once.');
+
+  let langCode = 'ENG';
+  if (languageName.includes('Hindi')) langCode = 'HIN';
+  if (languageName.includes('Telugu')) langCode = 'TEL';
+
+  if (process.env.SARVAM_API_KEY) {
+    try {
+      const transcription = await performSarvamVisionOcr(buffers, buffers.map((_, index) => mimeTypes[index] || 'image/jpeg'), languageName);
+      if (transcription?.trim()) {
+        console.log(`✅ [OCR SUCCESS] Extracted ${transcription.trim().length} characters from ${buffers.length} page(s) via Sarvam`);
+        return { ocrText: transcription.trim(), confidence: 0.98, langCode };
+      }
+    } catch (error) {
+      console.warn('⚠️ [OCR SERVICE] Sarvam multi-page OCR failed; using Gemini page fallback:', error);
+    }
+  }
+
+  const prompt = `Perform high-precision OCR on this handwritten ${subject || ''} answer-sheet page in ${languageName}. Preserve wording, question numbers, formulas, symbols, units, and layout. Return only the transcription.`;
+  const pages = await Promise.all(buffers.map((buffer, index) => callGemini36Api(prompt, buffer, mimeTypes[index] || 'image/jpeg', 3, 'gemini-3.6-flash')));
+  if (pages.some((page) => !page?.trim())) throw new Error('OCR providers could not transcribe every answer-sheet page.');
+  return {
+    ocrText: pages.map((page, index) => `--- PAGE ${index + 1} ---\n${page!.trim()}`).join('\n\n'),
+    confidence: 0.95,
+    langCode
+  };
+}
+
 /**
  * Multilingual Vision OCR Service powered by Google Gemini 3.6
  */

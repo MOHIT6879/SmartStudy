@@ -333,6 +333,44 @@ function normalizeQuestionEvaluations(
   }));
 }
 
+function sarvamEvaluationSchema(questionCount: number): Record<string, unknown> {
+  return {
+    type: 'json_schema',
+    json_schema: {
+      name: 'answer_sheet_evaluation',
+      strict: true,
+      schema: {
+        type: 'object',
+        properties: {
+          excelledAreas: { type: 'array', items: { type: 'string' } },
+          knowledgeGaps: { type: 'array', items: { type: 'string' } },
+          feedback: { type: 'string' },
+          socraticHint: { type: 'string' },
+          questionEvaluations: {
+            type: 'array',
+            minItems: questionCount,
+            maxItems: questionCount,
+            items: {
+              type: 'object',
+              properties: {
+                questionNo: { type: 'string' },
+                studentAnswerSnippet: { type: 'string' },
+                scorePercent: { type: 'number', enum: [0, 25, 50, 75, 100] },
+                reasoning: { type: 'string' },
+                feedback: { type: 'string' }
+              },
+              required: ['questionNo', 'studentAnswerSnippet', 'scorePercent', 'reasoning', 'feedback'],
+              additionalProperties: false
+            }
+          }
+        },
+        required: ['excelledAreas', 'knowledgeGaps', 'feedback', 'socraticHint', 'questionEvaluations'],
+        additionalProperties: false
+      }
+    }
+  };
+}
+
 /**
  * Vision OCR & Student Paper Evaluation via Google Gemini 3.6
  */
@@ -375,6 +413,9 @@ YOUR GRADING INSTRUCTIONS:
   - Minimal Credit (25%): A relevant attempt contains one correct concept but is substantially incomplete.
    - Unrelated / No Credit (0%): Student wrote about a completely different question or topic -> award 0% with an explicit reasoning note.
   - Use ONLY 0, 25, 50, 75, or 100 for scorePercent.
+  - First identify the distinct essential marking points in the benchmark key, then check each point against the student's answer.
+  - Award 100% when every essential marking point is present and correct, even if wording, order, spelling, grammar, or notation style differs from the benchmark.
+  - Do not reduce marks for repetition or extra correct explanation. Reduce marks only for a missing essential point or a factual contradiction.
 3. Return scorePercent for each question, but do not use percentage as the final grade. The application converts each percentage into marks using that question's maximum marks.
 4. Extract 2-4 Excelled Areas and 1-3 Knowledge Gaps.
 5. Provide constructive feedback and a natural Socratic Guidance Hint.
@@ -411,14 +452,24 @@ Return ONLY a valid JSON object matching this structure:
     if (!existingOcrText.trim()) {
       throw new Error('Sarvam evaluation requires the OCR transcription from Stage 3.');
     }
-    console.log(`🇮🇳 [SARVAM PIPELINE] Reusing Stage 3 Telugu OCR transcription (${existingOcrText.length} chars).`);
-    evaluationPrompt = `${systemPrompt}\n\nSARVAM VISION TRANSCRIPTION:\n${existingOcrText}`;
+    console.log(`🇮🇳 [SARVAM PIPELINE] Reusing Stage 3 OCR transcription (${existingOcrText.length} chars).`);
+    evaluationPrompt = `You are an expert teacher grading an answer sheet from OCR text.
+
+  TEXTBOOK CONTEXT:
+  ${textbookContext}
+
+  ${questionsPrompt}
+
+  OCR TRANSCRIPTION:
+  ${existingOcrText}
+
+  For every assigned question, identify the essential marking points in its benchmark and check each point against the OCR. Award 100 when all essential points are semantically present and correct, regardless of wording, order, spelling, grammar, or notation style. Do not penalize repetition or extra correct explanation. Reduce marks only for missing essential points or factual contradictions. Use only 0, 25, 50, 75, or 100 for scorePercent. Award credit only for evidence in the OCR transcription. Unanswered or unrelated questions receive 0. Keep snippets, reasoning, and feedback concise. Do not repeat question text, benchmark keys, or the full OCR. Return exactly ${assignedQuestions.length} questionEvaluations.`;
     evaluationImages = null;
     console.log(`🇮🇳 [SARVAM PIPELINE] Feeding transcription to Sarvam structured grading (${process.env.SARVAM_CHAT_MODEL || 'sarvam-105b'})...`);
     aiText = await callSarvamChatApi(evaluationPrompt, 2, {
       reasoningEffort: null,
-      maxTokens: 8192,
-      responseFormat: { type: 'json_object' },
+      maxTokens: 4096,
+      responseFormat: sarvamEvaluationSchema(assignedQuestions.length),
       temperature: 0,
       seed: 42
     });
@@ -530,12 +581,45 @@ function normalizeQuestionPaper(rawText: string | null): Question[] | null {
     id: String(question?.id || `q${index + 1}`),
     section: String(question?.section || question?.part || 'Questions'),
     marks: Number(question?.marks),
-    text: String(question?.text || question?.question || '').trim(),
+    text: String(question?.text || question?.question || '').replace(/^\s*(?:q(?:uestion)?\s*)?\d+[.):-]\s*/i, '').trim(),
     correctAnswer: String(question?.correctAnswer || question?.answerKey || '').trim()
   }));
   return questions.every((question) => question.text && Number.isFinite(question.marks) && question.marks >= 0 && question.correctAnswer)
     ? questions
     : null;
+}
+
+function sarvamQuestionPaperSchema(): Record<string, unknown> {
+  return {
+    type: 'json_schema',
+    json_schema: {
+      name: 'question_paper_extraction',
+      strict: true,
+      schema: {
+        type: 'object',
+        properties: {
+          questions: {
+            type: 'array',
+            minItems: 1,
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                section: { type: 'string' },
+                marks: { type: 'number' },
+                text: { type: 'string' },
+                correctAnswer: { type: 'string' }
+              },
+              required: ['id', 'section', 'marks', 'text', 'correctAnswer'],
+              additionalProperties: false
+            }
+          }
+        },
+        required: ['questions'],
+        additionalProperties: false
+      }
+    }
+  };
 }
 
 export async function extractQuestionsFromImage(
@@ -569,14 +653,13 @@ Return ONLY a valid JSON object with NO markdown code block wrappers:
   if (useSarvam) {
     console.log(`🇮🇳 [PHOTO QUESTION EXTRACTOR] Routing ${languageOrSubject} question paper through Sarvam Vision OCR...`);
     try {
-      const ocrPages = await Promise.all(buffers.map((buffer) => performSarvamVisionOcr(buffer, mimeType, languageOrSubject)));
-      const transcription = ocrPages.filter(Boolean).join('\n\n--- NEXT PAGE ---\n\n');
+      const transcription = await performSarvamVisionOcr(buffers, buffers.map(() => mimeType), languageOrSubject) || '';
       aiText = await callSarvamChatApi(`${prompt}\n\nSARVAM VISION TRANSCRIPTION:\n${transcription}`, 2, {
         reasoningEffort: null,
         maxTokens: 4096,
         temperature: 0,
         seed: 42,
-        responseFormat: { type: 'json_object' }
+        responseFormat: sarvamQuestionPaperSchema()
       });
     } catch (error) {
       console.warn('⚠️ [PHOTO QUESTION EXTRACTOR] Sarvam extraction failed; using Gemini fallback:', error);

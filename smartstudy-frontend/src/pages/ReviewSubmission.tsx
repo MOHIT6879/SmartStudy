@@ -68,7 +68,7 @@ export default function ReviewSubmission() {
   const approve = async () => {
     const response = await fetch(`${API_BASE_URL}/api/submissions/${id}/approve`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feedback, socraticHint: hint, score: Math.round(totalEarned * 100) / 100 })
+      body: JSON.stringify({ feedback, socraticHint: hint, score: Math.round(totalEarned * 100) / 100, questionEvaluations: questions })
     });
     if ((await response.json()).success) { setApproved(true); alert('Grades approved.'); }
   };
