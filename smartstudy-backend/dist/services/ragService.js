@@ -325,7 +325,7 @@ export const MODEL_THRESHOLDS = {
 /**
  * 3. Direct Google Gemini Vision LLM & Vector RAG Student Answer Evaluation
  */
-export async function evaluateStudentAnswerAgainstPdf(ocrText, className, imageInput, mimeType, assignedQuestions, reasoningModel) {
+export async function evaluateStudentAnswerAgainstPdf(ocrText, className, imageInput, mimeType, assignedQuestions, reasoningModel, language) {
     let pdfChunks = [];
     // 1. Vector Cosine Similarity Search & Context Retrieval
     try {
@@ -359,10 +359,20 @@ export async function evaluateStudentAnswerAgainstPdf(ocrText, className, imageI
         console.warn('Error performing vector search:', err);
     }
     // Use Google Gemini 3.6 Vision API to perform OCR transcription and contextual RAG evaluation with assigned questions
-    const visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], reasoningModel);
+    let visionRes;
+    try {
+        visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], reasoningModel, language, ocrText);
+    }
+    catch (evaluationError) {
+        if (reasoningModel !== 'sarvam')
+            throw evaluationError;
+        console.warn('⚠️ [EVALUATION] Sarvam structured evaluation failed; using Gemini fallback:', evaluationError);
+        visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], 'gemini-3.6-flash', language, ocrText);
+    }
     return {
         ocrText: visionRes.ocrText || ocrText,
         score: visionRes.score,
+        maxScore: visionRes.maxScore,
         excelledAreas: visionRes.excelledAreas,
         knowledgeGaps: visionRes.knowledgeGaps,
         feedback: visionRes.feedback,

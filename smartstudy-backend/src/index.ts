@@ -172,8 +172,9 @@ app.post('/api/rag/extract-questions-from-image', uploadDisk.any(), async (req, 
 
     const imageBuffers = uploadedFiles.map(f => f.buffer);
     const primaryMime = uploadedFiles[0]?.mimetype || 'image/jpeg';
+    const languageOrSubject = String(req.body.subjectLanguage || req.body.language || req.body.subject || req.body.className || 'English');
 
-    const questions = await extractQuestionsFromImage(imageBuffers, primaryMime);
+    const questions = await extractQuestionsFromImage(imageBuffers, primaryMime, languageOrSubject);
     console.log(`✅ [PHOTO EXTRACT COMPLETED] Successfully extracted ${questions.length} question(s) with benchmark keys.`);
     res.json({ success: true, questions });
   } catch (err: any) {
@@ -353,6 +354,7 @@ app.get('/api/question-modules', async (req, res) => {
 
 // 6. Submit Assignment (Pure Supabase Cloud Evaluation with Multi-Image Support)
 app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
+  let persistedSubmissionId: string | null = null;
   try {
     const { assignmentId, studentName, selectedLanguage, className, subject } = req.body;
     const lang = selectedLanguage || 'English';
@@ -421,6 +423,33 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
       }
     }
 
+    const id = 'sub-' + Date.now();
+    const submittedAt = new Date().toISOString();
+    if (isSupabaseConfigured()) {
+      const initialPayload: any = {
+        id,
+        assignment_id: assignmentId || 'assign-1',
+        student_name: name,
+        subject: targetSubject,
+        language: lang,
+        lang_code: lang.substring(0, 3).toUpperCase(),
+        sample_paper_url: samplePaperUrl,
+        sample_paper_urls: JSON.stringify(samplePaperUrls),
+        status: 'processing',
+        submitted_at: submittedAt
+      };
+      let { error: insertError } = await supabase.from('submissions').insert([initialPayload]);
+      if (insertError) {
+        delete initialPayload.sample_paper_urls;
+        ({ error: insertError } = await supabase.from('submissions').insert([initialPayload]));
+      }
+      if (insertError) {
+        throw new Error(`Could not create submission record: ${insertError.message}`);
+      }
+      persistedSubmissionId = id;
+      console.log(`💾 Stored submission "${id}" with status "processing".`);
+    }
+
     // Perform Vision LLM & Vector RAG evaluation across all uploaded paper pages
     console.log(`🔍 [STAGE 3/4] Transcribing handwriting via OCR Agent (Lang: ${lang}, Subject: ${targetSubject})...`);
     let ocrText = '';
@@ -443,17 +472,16 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
       imageBuffers,
       primaryFile?.mimetype || 'image/jpeg',
       assignedQuestions,
-      reasoningModel
+      reasoningModel,
+      lang
     );
 
     const finalOcrText = pdfEval.ocrText || ocrText;
-    const id = 'sub-' + Date.now();
-    const submittedAt = new Date().toISOString();
 
     console.log(`\n===============================================================`);
     console.log(`🏆 [GRADING COMPLETE] Submission ID: "${id}"`);
     console.log(`   ├─ Student       : "${name}"`);
-    console.log(`   ├─ Overall Score : ${pdfEval.score}%`);
+    console.log(`   ├─ Overall Score : ${pdfEval.score}/${pdfEval.maxScore} marks`);
     console.log(`   ├─ Excelled Areas: ${(pdfEval.excelledAreas || []).join(', ') || 'None'}`);
     console.log(`   ├─ Knowledge Gaps: ${(pdfEval.knowledgeGaps || []).join(', ') || 'None'}`);
     console.log(`   ├─ Questions QA  : ${(pdfEval.questionEvaluations || []).length} items evaluated`);
@@ -463,6 +491,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
     const aiEvalData = {
       ocrText: finalOcrText,
       score: pdfEval.score,
+      maxScore: pdfEval.maxScore,
       excelledAreas: pdfEval.excelledAreas,
       knowledgeGaps: pdfEval.knowledgeGaps,
       feedback: pdfEval.feedback,
@@ -470,39 +499,26 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
       questionEvaluations: pdfEval.questionEvaluations
     };
 
-    const submissionPayload: any = {
-      id,
-      assignment_id: assignmentId || 'assign-1',
-      student_name: name,
-      subject: targetSubject,
-      language: lang,
-
+    const evaluationUpdate: any = {
       lang_code: langCode,
-      sample_paper_url: samplePaperUrl,
-      sample_paper_urls: JSON.stringify(samplePaperUrls),
       ocr_text: finalOcrText,
       score: pdfEval.score,
+      max_score: pdfEval.maxScore,
       feedback: pdfEval.feedback,
       socratic_hint: pdfEval.socraticHint,
       ai_evaluation_json: JSON.stringify(aiEvalData),
-      status: 'pending_review',
-      submitted_at: submittedAt
+      status: 'pending_review'
     };
 
     if (isSupabaseConfigured()) {
-      const { error: supaErr } = await supabase.from('submissions').insert([submissionPayload]);
-      if (supaErr) {
-        console.warn('⚠️ Supabase submission insert notice (retrying with legacy schema compatibility):', supaErr.message);
-        // Fallback for legacy database schema without optional columns
-        delete submissionPayload.sample_paper_urls;
-        delete submissionPayload.ai_evaluation_json;
-        const { error: retryErr } = await supabase.from('submissions').insert([submissionPayload]);
-        if (retryErr) {
-          console.warn('❌ Supabase fallback insert notice:', retryErr.message);
-        }
-      } else {
-        console.log(`💾 Stored submission "${id}" in Supabase DB.`);
+      let { error: updateError } = await supabase.from('submissions').update(evaluationUpdate).eq('id', id);
+      if (updateError) {
+        console.warn('⚠️ Supabase submission update notice (retrying with legacy schema compatibility):', updateError.message);
+        delete evaluationUpdate.ai_evaluation_json;
+        ({ error: updateError } = await supabase.from('submissions').update(evaluationUpdate).eq('id', id));
       }
+      if (updateError) throw new Error(`Could not save submission evaluation: ${updateError.message}`);
+      console.log(`💾 Updated submission "${id}" to status "pending_review".`);
     }
 
     const newSubmission = {
@@ -518,6 +534,7 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
       aiEvaluation: {
         ocrText: finalOcrText,
         score: pdfEval.score,
+        maxScore: pdfEval.maxScore,
         excelledAreas: pdfEval.excelledAreas,
         knowledgeGaps: pdfEval.knowledgeGaps,
         feedback: pdfEval.feedback,
@@ -532,6 +549,13 @@ app.post('/api/submissions', uploadDisk.any(), async (req, res) => {
     res.json({ success: true, submission: newSubmission });
   } catch (err: any) {
     console.error('❌ Submission Error:', err);
+    if (persistedSubmissionId && isSupabaseConfigured()) {
+      const { error: failureUpdateError } = await supabase.from('submissions').update({
+        status: 'failed',
+        feedback: err.message || 'Submission processing failed.'
+      }).eq('id', persistedSubmissionId);
+      if (failureUpdateError) console.warn('⚠️ Could not mark submission as failed:', failureUpdateError.message);
+    }
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -667,6 +691,7 @@ app.get('/api/submissions', async (req, res) => {
             aiEvaluation: parsedAiEval || {
               ocrText: r.ocr_text,
               score: r.score,
+              maxScore: r.max_score,
               feedback: r.feedback,
               socraticHint: r.socratic_hint,
               metrics: { accuracy: 0.94, completeness: 0.89 }
@@ -691,7 +716,7 @@ app.post('/api/submissions/:id/approve', async (req, res) => {
     const { feedback, socraticHint, score } = req.body;
 
     console.log(`\n✍️ [TEACHER APPROVAL] Reviewing Submission: "${id}"`);
-    console.log(`   ├─ Approved Final Score: ${score}/100`);
+    console.log(`   ├─ Approved Final Score: ${score} marks`);
     console.log(`   ├─ Feedback Notes      : "${(feedback || '').substring(0, 80)}..."`);
     console.log(`   └─ Socratic Hint       : "${(socraticHint || '').substring(0, 80)}..."`);
 
@@ -709,7 +734,7 @@ app.post('/api/submissions/:id/approve', async (req, res) => {
         id: 'notif-' + Date.now(),
         type: 'evaluation_ready',
         title: '📲 WhatsApp Digest: Teacher Graded Paper',
-        message: `Teacher reviewed & approved score ${score}/100 for ${subData?.student_name || 'Student'}.`,
+        message: `Teacher reviewed & approved score ${score} marks for ${subData?.student_name || 'Student'}.`,
         details_json: JSON.stringify({ score, feedback, socraticHint }),
         timestamp: new Date().toISOString(),
         student_name: subData?.student_name

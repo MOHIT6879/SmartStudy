@@ -5,6 +5,8 @@ dotenv.config();
 export interface Question {
   id: string;
   text: string;
+  marks?: number;
+  section?: string;
   options?: string[];
   correctAnswer?: string;
   rubricKey?: string;
@@ -17,13 +19,17 @@ export interface QuestionEvaluation {
   benchmarkKey?: string;
   studentAnswerSnippet?: string;
   scorePercent: number;
+  marks: number;
+  earnedMarks: number;
   status: 'Full Credit' | 'Partial Credit' | 'Unrelated / No Credit';
   reasoning: string;
+  feedback?: string;
 }
 
 export interface VisionEvaluationResult {
   ocrText: string;
   score: number;
+  maxScore: number;
   excelledAreas: string[];
   knowledgeGaps: string[];
   feedback: string;
@@ -168,6 +174,9 @@ export async function generateEmbedding(text: string): Promise<number[]> {
  */
 export async function determineReasoningModel(subject: string, questionsText: string): Promise<string> {
   const lowerSubject = subject ? subject.toLowerCase() : '';
+  if (process.env.PRIMARY_AI_PROVIDER?.toLowerCase() === 'sarvam') {
+    return 'sarvam';
+  }
   if (lowerSubject.includes('hindi') || lowerSubject.includes('telugu')) {
     return 'sarvam';
   }
@@ -200,32 +209,128 @@ ${questionsText.substring(0, 2000)}`;
   return 'gemini-3.6-flash';
 }
 
-/**
- * Safely parse JSON strings from LLMs by sanitizing unescaped control characters
- */
-function cleanAndParseJson(rawText: string): any {
+function parseJsonValue(rawText: string, openingCharacter: '{' | '['): any {
   if (!rawText) return null;
-  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return null;
+  const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const source = fencedMatch?.[1]?.trim() || rawText.trim();
+  const closingCharacter = openingCharacter === '{' ? '}' : ']';
+  const start = source.indexOf(openingCharacter);
+  if (start < 0) return null;
 
-  let str = jsonMatch[0];
-  str = str.replace(/[\u0000-\u001F\u007F-\u009F]/g, (ch) => {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let jsonCandidate = '';
+  for (let index = start; index < source.length; index++) {
+    const character = source[index];
+    jsonCandidate += character;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\' && inString) {
+      escaped = true;
+      continue;
+    }
+    if (character === '"') inString = !inString;
+    if (!inString && character === openingCharacter) depth++;
+    if (!inString && character === closingCharacter && --depth === 0) break;
+  }
+  if (depth !== 0) return null;
+
+  const sanitized = jsonCandidate.replace(/[\u0000-\u001F\u007F-\u009F]/g, (ch) => {
     if (ch === '\n') return '\\n';
     if (ch === '\r') return '\\r';
     if (ch === '\t') return '\\t';
     return '';
   });
 
+  let repaired = '';
+  let stringMode = false;
+  for (let index = 0; index < sanitized.length; index++) {
+    const character = sanitized[index];
+    if (character === '"' && (index === 0 || sanitized[index - 1] !== '\\')) {
+      stringMode = !stringMode;
+      repaired += character;
+      continue;
+    }
+    if (character === '\\' && stringMode) {
+      const next = sanitized[index + 1];
+      if (next && !'"\\/bfnrtu'.includes(next)) repaired += '\\\\';
+      else repaired += character;
+      continue;
+    }
+    repaired += character;
+  }
+
   try {
-    return JSON.parse(str);
+    return JSON.parse(repaired);
   } catch (e) {
     try {
-      return JSON.parse(jsonMatch[0]);
+      return JSON.parse(jsonCandidate);
     } catch (e2) {
       console.warn('⚠️ cleanAndParseJson exception:', e2);
       return null;
     }
   }
+}
+
+/**
+ * Safely parse JSON objects from LLM responses.
+ */
+function cleanAndParseJson(rawText: string): any {
+  return parseJsonValue(rawText, '{');
+}
+
+function normalizeQuestionEvaluations(
+  rawEvaluations: any[],
+  assignedQuestions: Question[]
+): QuestionEvaluation[] {
+  const source = Array.isArray(rawEvaluations) ? rawEvaluations : [];
+  const questions: Question[] = assignedQuestions.length > 0
+    ? assignedQuestions
+    : source.map((evaluation, index) => ({
+        id: `q${index + 1}`,
+        text: evaluation?.questionText || `Question ${index + 1}`,
+        correctAnswer: evaluation?.benchmarkKey || ''
+      }));
+
+  return questions.map((question, index) => {
+    const expectedNumber = index + 1;
+    const evaluation = source.find((item) => {
+      const parsedNumber = Number.parseInt(String(item?.questionNo || '').replace(/\D/g, ''), 10);
+      return parsedNumber === expectedNumber;
+    }) || source[index] || {};
+    const numericScore = Number(evaluation.scorePercent);
+    const scorePercent = Number.isFinite(numericScore)
+      ? Math.round(Math.min(100, Math.max(0, numericScore)) / 25) * 25
+      : 0;
+    const status: QuestionEvaluation['status'] = scorePercent >= 90
+      ? 'Full Credit'
+      : scorePercent > 0
+        ? 'Partial Credit'
+        : 'Unrelated / No Credit';
+
+    return {
+      questionNo: `Q${expectedNumber}`,
+      questionText: question.text,
+      marks: Number.isFinite(Number(question.marks)) && Number(question.marks) > 0 ? Number(question.marks) : 5,
+      earnedMarks: 0,
+      benchmarkKey: question.correctAnswer || question.rubricKey || evaluation.benchmarkKey || 'No benchmark key provided.',
+      studentAnswerSnippet: evaluation.studentAnswerSnippet || 'No answer detected in the scanned paper.',
+      scorePercent,
+      status,
+      reasoning: evaluation.reasoning || (scorePercent === 0
+        ? 'No relevant answer was detected for this question.'
+        : 'The response was compared with the assigned benchmark key.'),
+      feedback: evaluation.feedback || evaluation.reasoning || (scorePercent >= 90
+        ? 'Correct and complete response.'
+        : 'Review the benchmark key and add the missing concepts.')
+    };
+  }).map((evaluation) => ({
+    ...evaluation,
+    earnedMarks: Math.round((evaluation.marks * evaluation.scorePercent / 100) * 100) / 100
+  }));
 }
 
 /**
@@ -236,7 +341,9 @@ export async function analyzeStudentPaper(
   mimeType: string = 'image/jpeg',
   textbookChunks: string[] = [],
   assignedQuestions: any[] = [],
-  evaluationModel?: string
+  evaluationModel?: string,
+  language: string = 'English',
+  existingOcrText: string = ''
 ): Promise<VisionEvaluationResult> {
   const buffers: Buffer[] = Array.isArray(imageInput)
     ? imageInput.filter(b => b && b.length > 0)
@@ -249,7 +356,7 @@ export async function analyzeStudentPaper(
     : 'Core curriculum concepts, definitions, key theories, principles, and structured subject knowledge.';
 
   const questionsPrompt = assignedQuestions.length > 0
-    ? `ASSIGNED QUESTIONS TO EVALUATE:\n` + assignedQuestions.map((q, idx) => `Question ${idx + 1}: "${q.text}" (Ground Truth Benchmark Key: "${q.correctAnswer || 'Textbook reference answer'}")`).join('\n')
+    ? `ASSIGNED QUESTIONS TO EVALUATE:\n` + assignedQuestions.map((q, idx) => `Question ${idx + 1}: "${q.text}" (Maximum marks: ${q.marks || 5}; Ground Truth Benchmark Key: "${q.correctAnswer || 'Textbook reference answer'}")`).join('\n')
     : `ASSIGNED QUESTIONS: Evaluate questions answered on the student paper against textbook context.`;
 
   const systemPrompt = `You are an expert teacher evaluating a student's handwritten answer sheet containing ${pageCount} page image(s).
@@ -262,12 +369,18 @@ ${questionsPrompt}
 YOUR GRADING INSTRUCTIONS:
 1. Perform high-precision OCR across ALL ${pageCount} page image(s) provided. Transcribe all legible text page by page (e.g. --- PAGE 1 ---, --- PAGE 2 ---, etc.) across all sections.
 2. For each assigned question, evaluate whether the student's handwritten text across any of the pages actually answers that question:
-   - Full Credit (90-100%): Student correctly answers the question with accurate textbook concepts and terminology.
-   - Partial Credit (30-80%): Student attempts the question or explains part of the concept -> award partial percentage.
+  - Full Credit (100%): Student includes all essential benchmark concepts accurately.
+  - Strong Partial Credit (75%): Most essential concepts are correct, with one meaningful omission or minor error.
+  - Partial Credit (50%): About half of the essential concepts are correct.
+  - Minimal Credit (25%): A relevant attempt contains one correct concept but is substantially incomplete.
    - Unrelated / No Credit (0%): Student wrote about a completely different question or topic -> award 0% with an explicit reasoning note.
-3. Calculate the overall score (0 to 100%) as the average of individual question scorePercent values.
+  - Use ONLY 0, 25, 50, 75, or 100 for scorePercent.
+3. Return scorePercent for each question, but do not use percentage as the final grade. The application converts each percentage into marks using that question's maximum marks.
 4. Extract 2-4 Excelled Areas and 1-3 Knowledge Gaps.
 5. Provide constructive feedback and a natural Socratic Guidance Hint.
+6. Return exactly one questionEvaluations item for every assigned question, in the same order. Never omit unanswered questions; score them 0.
+7. Use the assigned question text and benchmark key verbatim. Do not rewrite or invent either one.
+8. Keep scoring deterministic: identical evidence must receive the same score. Award points only for concepts present in studentAnswerSnippet.
 
 Return ONLY a valid JSON object matching this structure:
 {
@@ -285,38 +398,60 @@ Return ONLY a valid JSON object matching this structure:
       "studentAnswerSnippet": "Transcribed student text from paper for Q1",
       "scorePercent": 0,
       "status": "Unrelated / No Credit",
-      "reasoning": "Student wrote about a different topic."
+      "reasoning": "Student wrote about a different topic.",
+      "feedback": "Review the benchmark key and answer this specific question."
     }
   ]
 }`;
 
   let evaluationPrompt = systemPrompt;
   let evaluationImages: Buffer[] | null = buffers;
+  let aiText: string | null;
   if (evaluationModel === 'sarvam') {
-    console.log(`🇮🇳 [SARVAM PIPELINE] Digitizing ${buffers.length} page(s) via Sarvam Vision OCR before LLM reasoning...`);
-    const sarvamOcrPages = await Promise.all(buffers.map((buffer) => performSarvamVisionOcr(buffer, mimeType, 'Hindi/Telugu')));
-    evaluationPrompt = `${systemPrompt}\n\nSARVAM VISION TRANSCRIPTION:\n${sarvamOcrPages.filter(Boolean).join('\n\n')}`;
+    if (!existingOcrText.trim()) {
+      throw new Error('Sarvam evaluation requires the OCR transcription from Stage 3.');
+    }
+    console.log(`🇮🇳 [SARVAM PIPELINE] Reusing Stage 3 Telugu OCR transcription (${existingOcrText.length} chars).`);
+    evaluationPrompt = `${systemPrompt}\n\nSARVAM VISION TRANSCRIPTION:\n${existingOcrText}`;
     evaluationImages = null;
-    console.log(`🇮🇳 [SARVAM PIPELINE] Vision transcription completed. Feeding to Sarvam Chat Reasoning (${process.env.SARVAM_CHAT_MODEL || 'sarvam-105b'})...`);
+    console.log(`🇮🇳 [SARVAM PIPELINE] Feeding transcription to Sarvam structured grading (${process.env.SARVAM_CHAT_MODEL || 'sarvam-105b'})...`);
+    aiText = await callSarvamChatApi(evaluationPrompt, 2, {
+      reasoningEffort: null,
+      maxTokens: 8192,
+      responseFormat: { type: 'json_object' },
+      temperature: 0,
+      seed: 42
+    });
+  } else {
+    aiText = await callGemini36Api(evaluationPrompt, evaluationImages, mimeType, 3, evaluationModel);
   }
-  const aiText = await callGemini36Api(evaluationPrompt, evaluationImages, mimeType, 3, evaluationModel);
   if (aiText) {
     const parsed = cleanAndParseJson(aiText);
     if (parsed) {
-      console.log(`📊 [EVALUATION PARSED] Score: ${parsed.score}%, Excelled: [${(parsed.excelledAreas || []).join(', ')}], Gaps: [${(parsed.knowledgeGaps || []).join(', ')}]`);
+      if (assignedQuestions.length > 0 && (!Array.isArray(parsed.questionEvaluations) || parsed.questionEvaluations.length !== assignedQuestions.length)) {
+        throw new Error(`${evaluationModel === 'sarvam' ? 'Sarvam' : 'Gemini'} returned an incomplete question evaluation set.`);
+      }
+      const questionEvaluations = normalizeQuestionEvaluations(parsed.questionEvaluations, assignedQuestions);
+      const totalMarks = questionEvaluations.reduce((total, evaluation) => total + evaluation.marks, 0);
+      const normalizedScore = questionEvaluations.length > 0
+        ? Math.round(questionEvaluations.reduce((total, evaluation) => total + evaluation.earnedMarks, 0) * 100) / 100
+        : (typeof parsed.score === 'number' ? Math.round(Math.min(100, Math.max(0, parsed.score))) : 0);
+      console.log(`📊 [EVALUATION PARSED] Score: ${normalizedScore}/${totalMarks}, Questions: ${questionEvaluations.length}, Excelled: [${(parsed.excelledAreas || []).join(', ')}], Gaps: [${(parsed.knowledgeGaps || []).join(', ')}]`);
       return {
         ocrText: parsed.ocrText || 'OCR transcription unavailable',
-        score: typeof parsed.score === 'number' ? parsed.score : 0,
+        score: normalizedScore,
+        maxScore: totalMarks,
         excelledAreas: Array.isArray(parsed.excelledAreas) ? parsed.excelledAreas : [],
         knowledgeGaps: Array.isArray(parsed.knowledgeGaps) ? parsed.knowledgeGaps : [],
         feedback: parsed.feedback || 'Evaluation completed.',
         socraticHint: parsed.socraticHint || 'Review textbook key concepts.',
-        questionEvaluations: Array.isArray(parsed.questionEvaluations) ? parsed.questionEvaluations : []
+        questionEvaluations
       };
     }
   }
 
-  throw new Error('AI Evaluation unavailable: Google Gemini 3.6 API failed or rate limited.');
+  const provider = evaluationModel === 'sarvam' ? 'Sarvam' : 'Google Gemini 3.6';
+  throw new Error(`AI Evaluation unavailable: ${provider} returned ${aiText ? 'an invalid JSON evaluation' : 'no response'}.`);
 }
 
 /**
@@ -385,9 +520,28 @@ Return ONLY a valid JSON array of objects containing EXACTLY ${targetCount} item
 /**
  * Vision AI Question Paper Photo Extraction via Google Gemini 3.6
  */
+function normalizeQuestionPaper(rawText: string | null): Question[] | null {
+  if (!rawText) return null;
+  const parsed = parseJsonValue(rawText, '[') || cleanAndParseJson(rawText);
+  const source = Array.isArray(parsed) ? parsed : parsed?.questions;
+  if (!Array.isArray(source) || source.length === 0) return null;
+
+  const questions = source.map((question: any, index: number) => ({
+    id: String(question?.id || `q${index + 1}`),
+    section: String(question?.section || question?.part || 'Questions'),
+    marks: Number(question?.marks),
+    text: String(question?.text || question?.question || '').trim(),
+    correctAnswer: String(question?.correctAnswer || question?.answerKey || '').trim()
+  }));
+  return questions.every((question) => question.text && Number.isFinite(question.marks) && question.marks >= 0 && question.correctAnswer)
+    ? questions
+    : null;
+}
+
 export async function extractQuestionsFromImage(
   imageInput: Buffer[] | Buffer | null,
-  mimeType: string = 'image/jpeg'
+  mimeType: string = 'image/jpeg',
+  languageOrSubject: string = 'English'
 ): Promise<Question[]> {
   const buffers: Buffer[] = Array.isArray(imageInput)
     ? imageInput.filter(b => b && b.length > 0)
@@ -402,27 +556,48 @@ INSTRUCTIONS:
 2. For each question, extract or formulate its precise ground-truth reference answer key based on textbook knowledge.
 3. Preserve math symbols, scientific formulas, or non-English text (Hindi/Telugu) accurately.
 
-Return ONLY a valid JSON array of objects with NO markdown code block wrappers:
-[
-  { "id": "q1", "text": "Question 1 text...", "correctAnswer": "Ground-truth answer key..." },
-  { "id": "q2", "text": "Question 2 text...", "correctAnswer": "Ground-truth answer key..." }
-]`;
+Return ONLY a valid JSON object with NO markdown code block wrappers:
+{
+  "questions": [
+    { "id": "q1", "section": "Part - A - I", "marks": 2, "text": "Question 1 text...", "correctAnswer": "Ground-truth answer key..." },
+    { "id": "q2", "section": "Part - A - I", "marks": 2, "text": "Question 2 text...", "correctAnswer": "Ground-truth answer key..." }
+  ]
+}`;
 
-  const aiText = await callGemini36Api(prompt, buffers, mimeType);
-  if (aiText) {
-    const jsonMatch = aiText.match(/\[[\s\S]*\]/);
-    if (jsonMatch) {
-      try {
-        const questions = JSON.parse(jsonMatch[0]) as Question[];
-        if (Array.isArray(questions) && questions.length > 0) {
-          console.log(`🎯 [PHOTO QUESTION EXTRACTOR] Extracted ${questions.length} questions from image photo.`);
-          return questions;
-        }
-      } catch (e) {
-        console.warn('⚠️ Photo extraction JSON parse notice:', e);
-      }
+  const useSarvam = Boolean(process.env.SARVAM_API_KEY);
+  let aiText: string | null;
+  if (useSarvam) {
+    console.log(`🇮🇳 [PHOTO QUESTION EXTRACTOR] Routing ${languageOrSubject} question paper through Sarvam Vision OCR...`);
+    try {
+      const ocrPages = await Promise.all(buffers.map((buffer) => performSarvamVisionOcr(buffer, mimeType, languageOrSubject)));
+      const transcription = ocrPages.filter(Boolean).join('\n\n--- NEXT PAGE ---\n\n');
+      aiText = await callSarvamChatApi(`${prompt}\n\nSARVAM VISION TRANSCRIPTION:\n${transcription}`, 2, {
+        reasoningEffort: null,
+        maxTokens: 4096,
+        temperature: 0,
+        seed: 42,
+        responseFormat: { type: 'json_object' }
+      });
+    } catch (error) {
+      console.warn('⚠️ [PHOTO QUESTION EXTRACTOR] Sarvam extraction failed; using Gemini fallback:', error);
+      aiText = null;
+    }
+  } else {
+    aiText = await callGemini36Api(prompt, buffers, mimeType);
+  }
+  const primaryQuestions = normalizeQuestionPaper(aiText);
+  if (primaryQuestions) {
+    console.log(`🎯 [PHOTO QUESTION EXTRACTOR] Extracted ${primaryQuestions.length} questions via ${useSarvam ? 'Sarvam' : 'Gemini'}.`);
+    return primaryQuestions;
+  }
+  if (useSarvam) {
+    console.warn('⚠️ [PHOTO QUESTION EXTRACTOR] Sarvam returned invalid question JSON; using Gemini fallback.');
+    const fallbackText = await callGemini36Api(prompt, buffers, mimeType, 3, 'gemini-3.6-flash');
+    const fallbackQuestions = normalizeQuestionPaper(fallbackText);
+    if (fallbackQuestions) {
+      console.log(`🎯 [PHOTO QUESTION EXTRACTOR] Extracted ${fallbackQuestions.length} questions via Gemini fallback.`);
+      return fallbackQuestions;
     }
   }
-
-  return [];
+  throw new Error(`Question extraction failed: ${useSarvam ? 'Sarvam and Gemini' : 'Gemini'} returned invalid question JSON.`);
 }

@@ -9,6 +9,8 @@ import { performOcr } from './ocrService.js';
 export interface Question {
   id: string;
   text: string;
+  marks?: number;
+  section?: string;
   options?: string[];
   correctAnswer?: string;
   rubricKey?: string;
@@ -17,6 +19,7 @@ export interface Question {
 export interface EvaluationResult {
   ocrText: string;
   score: number;
+  maxScore: number;
   excelledAreas: string[];
   knowledgeGaps: string[];
   feedback: string;
@@ -383,7 +386,8 @@ export async function evaluateStudentAnswerAgainstPdf(
   imageInput?: Buffer[] | Buffer | null,
   mimeType?: string,
   assignedQuestions?: Question[],
-  reasoningModel?: string
+  reasoningModel?: string,
+  language?: string
 ): Promise<EvaluationResult & { questionEvaluations?: any[] }> {
   let pdfChunks: string[] = [];
 
@@ -423,11 +427,19 @@ export async function evaluateStudentAnswerAgainstPdf(
 
 
   // Use Google Gemini 3.6 Vision API to perform OCR transcription and contextual RAG evaluation with assigned questions
-  const visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], reasoningModel);
+  let visionRes;
+  try {
+    visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], reasoningModel, language, ocrText);
+  } catch (evaluationError) {
+    if (reasoningModel !== 'sarvam') throw evaluationError;
+    console.warn('⚠️ [EVALUATION] Sarvam structured evaluation failed; using Gemini fallback:', evaluationError);
+    visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], 'gemini-3.6-flash', language, ocrText);
+  }
 
   return {
     ocrText: visionRes.ocrText || ocrText,
     score: visionRes.score,
+    maxScore: visionRes.maxScore,
     excelledAreas: visionRes.excelledAreas,
     knowledgeGaps: visionRes.knowledgeGaps,
     feedback: visionRes.feedback,

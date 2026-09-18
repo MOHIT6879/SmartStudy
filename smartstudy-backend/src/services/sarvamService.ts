@@ -15,11 +15,27 @@ function sarvamHeaders(): Record<string, string> {
   return { 'api-subscription-key': getSarvamKey() };
 }
 
-export async function callSarvamChatApi(prompt: string, maxRetries = 3): Promise<string | null> {
+interface SarvamChatOptions {
+  reasoningEffort?: 'low' | 'medium' | 'high' | null;
+  maxTokens?: number;
+  responseFormat?: Record<string, unknown>;
+  temperature?: number;
+  seed?: number;
+}
+
+export async function callSarvamChatApi(
+  prompt: string,
+  maxRetries = 3,
+  options: SarvamChatOptions = {}
+): Promise<string | null> {
   const modelName = process.env.SARVAM_CHAT_MODEL || 'sarvam-105b';
   console.log(`🤖 [SARVAM AI] Calling Chat Completions (${modelName})...`);
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const reasoningEffort = options.reasoningEffort !== undefined
+      ? options.reasoningEffort
+      : (attempt === 1 ? 'medium' : 'low');
+    const maxTokens = options.maxTokens || (attempt === 1 ? 4096 : 8192);
     const response = await fetch(`${SARVAM_API_BASE_URL}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -29,16 +45,35 @@ export async function callSarvamChatApi(prompt: string, maxRetries = 3): Promise
       body: JSON.stringify({
         model: modelName,
         messages: [{ role: 'user', content: prompt }],
-        temperature: 0.2,
-        reasoning_effort: 'medium',
-        max_tokens: 4096
+        temperature: options.temperature ?? 0.2,
+        ...(options.seed !== undefined ? { seed: options.seed } : {}),
+        reasoning_effort: reasoningEffort,
+        max_tokens: maxTokens,
+        ...(options.responseFormat ? { response_format: options.responseFormat } : {})
       })
     });
 
     if (response.ok) {
       const data = await response.json() as any;
-      console.log(`✅ [SARVAM AI] Received successful response from ${modelName}`);
-      return data?.choices?.[0]?.message?.content || null;
+      const choice = data?.choices?.[0];
+      const content = choice?.message?.content;
+      if (typeof content === 'string' && content.trim()) {
+        console.log(`✅ [SARVAM AI] Received successful response from ${modelName}`);
+        return content;
+      }
+
+      const usage = data?.usage;
+      const reasoningLength = typeof choice?.message?.reasoning_content === 'string'
+        ? choice.message.reasoning_content.length
+        : 0;
+      console.warn(`⚠️ [SARVAM AI] Empty completion content (finish: ${choice?.finish_reason || 'unknown'}, completion tokens: ${usage?.completion_tokens ?? 'unknown'}, reasoning chars: ${reasoningLength}, attempt ${attempt}/${maxRetries}).`);
+      if (attempt < maxRetries) {
+        const nextReasoningEffort = options.reasoningEffort !== undefined ? options.reasoningEffort : 'low';
+        const nextMaxTokens = options.maxTokens || 8192;
+        console.log(`   └─ Retrying with reasoning=${nextReasoningEffort ?? 'disabled'}, max_tokens=${nextMaxTokens}...`);
+        continue;
+      }
+      return null;
     }
 
     const errorBody = await response.text();

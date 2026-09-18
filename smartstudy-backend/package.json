@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "provider-eval": "tsx ../provider-evaluation/src/runner.ts"
   },
   "keywords": [],
   "author": "",
