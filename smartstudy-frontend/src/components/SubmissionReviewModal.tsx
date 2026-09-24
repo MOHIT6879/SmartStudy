@@ -6,6 +6,8 @@ interface SubmissionReviewModalProps {
   onApprove: (id: string, feedback: string, socraticHint: string, score: number) => void;
 }
 
+const isPdfUrl = (url?: string) => Boolean(url && (/\.pdf(\?|#|$)/i.test(url) || url.startsWith('data:application/pdf') || url.includes('/pdf')));
+
 export default function SubmissionReviewModal({ submission, onClose, onApprove }: SubmissionReviewModalProps) {
   const [feedback, setFeedback] = useState(submission.aiEvaluation?.feedback || submission.finalFeedback || '');
   const [hint, setHint] = useState(submission.aiEvaluation?.socraticHint || submission.finalHint || '');
@@ -70,9 +72,15 @@ export default function SubmissionReviewModal({ submission, onClose, onApprove }
             >
               ✕
             </button>
-            {activeImageUrl ? <img src={activeImageUrl} alt="Student Full Paper" style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: '0.5rem', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)' }} /> : <p style={{ color: 'white' }}>No scan image available.</p>}
+            {activeImageUrl ? (
+              isPdfUrl(activeImageUrl) ? (
+                <iframe src={`${activeImageUrl}#toolbar=0&view=FitH`} style={{ width: '90vw', height: '85vh', borderRadius: '0.5rem' }} title="Student Full Paper PDF" />
+              ) : (
+                <img src={activeImageUrl} alt="Student Full Paper" style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: '0.5rem', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)' }} />
+              )
+            ) : <p style={{ color: 'white' }}>No scan document available.</p>}
             <p style={{ color: 'white', marginTop: '1rem', fontSize: '0.9rem' }}>
-              Page {activePageIndex + 1} of {imageList.length} • Click anywhere to close
+              Click anywhere to close
             </p>
           </div>
         )}
@@ -99,7 +107,7 @@ export default function SubmissionReviewModal({ submission, onClose, onApprove }
           <span className="badge badge-warning" style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem' }}>
             🎯 Status: {submission.status === 'approved' ? 'Approved by Teacher' : 'Pending Teacher Gatekeeper'}
           </span>
-          {imageList.length > 1 && (
+          {imageList.length > 1 && !isPdfUrl(imageList[0]) && (
             <span className="badge" style={{ background: '#6366F1', color: 'white', fontSize: '0.8rem', padding: '0.35rem 0.75rem' }}>
               📄 Multi-Page Submission ({imageList.length} Pages)
             </span>
@@ -119,11 +127,11 @@ export default function SubmissionReviewModal({ submission, onClose, onApprove }
                 onClick={() => setIsZoomOpen(true)}
                 style={{ fontSize: '0.75rem', background: '#EEF2FF', color: '#4F46E5', border: '1px solid #C7D2FE', padding: '0.2rem 0.5rem', borderRadius: '0.25rem', cursor: 'pointer', fontWeight: 600 }}
               >
-                🔍 Expand Full Photo
+                🔍 Expand Full Document
               </button>
             </div>
 
-            {/* Image Box */}
+            {/* Image / PDF Box */}
             <div style={{
               width: '100%',
               height: '260px',
@@ -131,28 +139,33 @@ export default function SubmissionReviewModal({ submission, onClose, onApprove }
               overflow: 'hidden',
               border: '1px solid #CBD5E1',
               position: 'relative',
-              background: '#0F172A',
-              cursor: 'pointer'
-            }}
-            onClick={() => setIsZoomOpen(true)}
-            >
-              {activeImageUrl ? <img src={activeImageUrl} alt="Student Handwritten Paper" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.95 }} /> : <p style={{ color: '#CBD5E1' }}>No scan image available.</p>}
-              <div style={{
-                position: 'absolute',
-                bottom: 8,
-                left: 8,
-                background: 'rgba(0, 0, 0, 0.75)',
-                color: 'white',
-                padding: '0.25rem 0.5rem',
-                borderRadius: '0.25rem',
-                fontSize: '0.7rem'
-              }}>
-                Detected Script: {langCode} Multilingual Engine
-              </div>
+              background: '#0F172A'
+            }}>
+              {activeImageUrl ? (
+                isPdfUrl(activeImageUrl) ? (
+                  <iframe src={`${activeImageUrl}#toolbar=0&view=FitH`} style={{ width: '100%', height: '100%', border: 'none' }} title="Student Handwritten Paper PDF" />
+                ) : (
+                  <img src={activeImageUrl} alt="Student Handwritten Paper" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.95, cursor: 'pointer' }} onClick={() => setIsZoomOpen(true)} />
+                )
+              ) : <p style={{ color: '#CBD5E1' }}>No scan document available.</p>}
+              {!isPdfUrl(activeImageUrl) && (
+                <div style={{
+                  position: 'absolute',
+                  bottom: 8,
+                  left: 8,
+                  background: 'rgba(0, 0, 0, 0.75)',
+                  color: 'white',
+                  padding: '0.25rem 0.5rem',
+                  borderRadius: '0.25rem',
+                  fontSize: '0.7rem'
+                }}>
+                  Detected Script: {langCode} Multilingual Engine
+                </div>
+              )}
             </div>
 
-            {/* Page Selector Tabs for Multi-Page Submissions */}
-            {imageList.length > 1 && (
+            {/* Page Selector Tabs for Multi-Page Image Submissions */}
+            {imageList.length > 1 && !isPdfUrl(imageList[0]) && (
               <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem', justifyContent: 'center' }}>
                 {imageList.map((_, idx) => (
                   <button

@@ -1,10 +1,14 @@
-import { callGemini36Api } from './aiService.js';
-import { performSarvamVisionOcr } from './sarvamService.js';
+import { callGemini36Api, getConfiguredGeminiModel } from './aiService.js';
+import { performSarvamVisionOcr, supportsSarvamDocumentLanguage } from './sarvamService.js';
 
 export interface OcrResult {
   ocrText: string;
   confidence: number;
   langCode: string;
+}
+
+function appLanguageCode(languageName: string): string {
+  return languageName.replace(/[^a-z]/gi, '').slice(0, 3).toUpperCase() || 'UNK';
 }
 
 export async function performOcrPages(
@@ -14,13 +18,10 @@ export async function performOcrPages(
   subject?: string
 ): Promise<OcrResult> {
   if (buffers.length === 0) throw new Error('No answer-sheet pages were provided for OCR.');
-  if (buffers.length > 10) throw new Error('A maximum of 10 answer-sheet pages can be processed at once.');
 
-  let langCode = 'ENG';
-  if (languageName.includes('Hindi')) langCode = 'HIN';
-  if (languageName.includes('Telugu')) langCode = 'TEL';
+  const langCode = appLanguageCode(languageName);
 
-  if (process.env.SARVAM_API_KEY) {
+  if (process.env.SARVAM_API_KEY && supportsSarvamDocumentLanguage(languageName)) {
     try {
       const transcription = await performSarvamVisionOcr(buffers, buffers.map((_, index) => mimeTypes[index] || 'image/jpeg'), languageName);
       if (transcription?.trim()) {
@@ -32,8 +33,15 @@ export async function performOcrPages(
     }
   }
 
-  const prompt = `Perform high-precision OCR on this handwritten ${subject || ''} answer-sheet page in ${languageName}. Preserve wording, question numbers, formulas, symbols, units, and layout. Return only the transcription.`;
-  const pages = await Promise.all(buffers.map((buffer, index) => callGemini36Api(prompt, buffer, mimeTypes[index] || 'image/jpeg', 3, 'gemini-3.6-flash')));
+  const prompt = `Perform high-precision OCR on this handwritten ${subject || ''} answer-sheet page in ${languageName}.
+Transcribe all printed text and student handwriting line by line.
+
+CRITICAL ANSWER-BOX & HANDWRITING TRANSCRIBING RULES:
+- For questions with answer boxes [ ], checkboxes, letter boxes, or fill-in blank lines:
+  - If a student wrote a letter or word inside the box/line, transcribe it as: [Box: <handwritten_text>] (e.g. [Box: B], [Box: H]).
+  - If the box/line is COMPLETELY BLANK or UNANSWERED (nothing written inside), transcribe it explicitly as: [Box: EMPTY].
+- Do NOT guess, invent, or infer answers. Transcribe ONLY what is physically handwritten inside the designated answer box/space.`;
+  const pages = await Promise.all(buffers.map((buffer, index) => callGemini36Api(prompt, buffer, mimeTypes[index] || 'image/jpeg', 3, getConfiguredGeminiModel())));
   if (pages.some((page) => !page?.trim())) throw new Error('OCR providers could not transcribe every answer-sheet page.');
   return {
     ocrText: pages.map((page, index) => `--- PAGE ${index + 1} ---\n${page!.trim()}`).join('\n\n'),
@@ -51,27 +59,27 @@ export async function performOcr(
   mimeType: string = 'image/jpeg',
   subject?: string
 ): Promise<OcrResult> {
-  let langCode = 'ENG';
-  if (languageName.includes('Hindi')) {
-    langCode = 'HIN';
-  } else if (languageName.includes('Telugu')) {
-    langCode = 'TEL';
-  }
+  const langCode = appLanguageCode(languageName);
 
   let buffer: Buffer | null = null;
   if (Buffer.isBuffer(imageSource) && imageSource.length > 0) {
     buffer = imageSource;
   }
 
-  const sarvamAvailable = Boolean(process.env.SARVAM_API_KEY);
-  const ocrModel = sarvamAvailable ? 'sarvam' : 'gemini-3.6-flash';
+  const sarvamAvailable = Boolean(process.env.SARVAM_API_KEY) && supportsSarvamDocumentLanguage(languageName);
+  const ocrModel = sarvamAvailable ? 'sarvam' : getConfiguredGeminiModel();
 
   console.log(`🔍 [OCR AGENT] Target Engine: "${ocrModel.toUpperCase()}" (Lang: ${languageName}, Code: ${langCode})`);
 
   if (buffer) {
     try {
       const prompt = `Perform high-precision optical character recognition (OCR) on the provided handwritten answer sheet image in ${languageName} script.
-Transcribe all legible handwritten or printed text line by line. Do not summarize or alter student wording. Transcribe text exactly as written on paper.`;
+Transcribe all legible handwritten or printed text line by line.
+
+CRITICAL ANSWER-BOX TRANSCRIBING RULES:
+- For answer boxes [ ], checkboxes, or fill-in blank lines:
+  - If handwriting is present inside the box/line, transcribe: [Box: <handwritten_text>] (e.g. [Box: B], [Box: H]).
+  - If the box/line is EMPTY or BLANK, transcribe: [Box: EMPTY].`;
 
       let transcribed: string | null = null;
       if (ocrModel === 'sarvam') {
@@ -79,7 +87,7 @@ Transcribe all legible handwritten or printed text line by line. Do not summariz
           transcribed = await performSarvamVisionOcr(buffer, mimeType, languageName);
         } catch (sarvamError) {
           console.warn('⚠️ [OCR SERVICE] Sarvam OCR failed; using Gemini fallback:', sarvamError);
-          transcribed = await callGemini36Api(prompt, buffer, mimeType, 3, 'gemini-3.6-flash');
+          transcribed = await callGemini36Api(prompt, buffer, mimeType, 3, getConfiguredGeminiModel());
         }
       } else {
         transcribed = await callGemini36Api(prompt, buffer, mimeType, 3, ocrModel);

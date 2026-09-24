@@ -34,7 +34,10 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.9",
     "@supabase/supabase-js": "^2.112.3",
-    "adm-zip": "^0.6.0"
+    "adm-zip": "^0.6.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.3.289"
   }
 }

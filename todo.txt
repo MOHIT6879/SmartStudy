@@ -1,7 +1,3 @@
-A middleware which do dynamic routing based on question complexity(not needed for ssc)
-
-test chandra and sarvam for indic languages 
-
 OCR extraction - gemini 2.5 flash 
 
 Science 
@@ -29,3 +25,18 @@ Reasoning -  sarvaam or chandra
 
 Hindi 
 Telugu 
+
+3.sarvam vs gemini in ocr and evaluation for for english, math, psychology, physics
+4.test with same paper multiple times 
+
+
+
+TRUNCATE TABLE 
+  assignments,
+  class_subjects,
+  classes,
+  notifications,
+  subjects,
+  submissions,
+  textbook_embeddings
+RESTART IDENTITY CASCADE;

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { 
   FileText, 
   Download, 
@@ -9,7 +9,9 @@ import {
 } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
 
-export default function ReviewQueue() {
+export default function ReviewQueue({ onScanScript }: { onScanScript?: () => void } = {}) {
+  const [searchParams] = useSearchParams();
+  const subjectFilter = searchParams.get('subjectFilter') || '';
   const [submissions, setSubmissions] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterTab, setFilterTab] = useState<'all' | 'pending' | 'approved'>('all');
@@ -63,6 +65,7 @@ export default function ReviewQueue() {
   const approvedCount = submissions.filter(s => s.status === 'approved').length;
 
   const filteredSubmissions = submissions.filter((s) => {
+    if (subjectFilter && (s.subject || s.assignment?.subject || '') !== subjectFilter) return false;
     const nameMatch = (s.studentName || s.student_name || '').toLowerCase().includes(searchQuery.toLowerCase());
     const subjectMatch = (s.subject || s.assignment?.title || '').toLowerCase().includes(searchQuery.toLowerCase());
     const matchesSearch = nameMatch || subjectMatch;
@@ -86,10 +89,17 @@ export default function ReviewQueue() {
             <Download className="size-4" />
             <span>Export CSV</span>
           </button>
-          <Link to="/upload" className="btn btn-primary">
-            <ScanLine className="size-4" />
-            <span>Scan a script</span>
-          </Link>
+          {onScanScript ? (
+            <button className="btn btn-primary" onClick={onScanScript}>
+              <ScanLine className="size-4" />
+              <span>Scan a script</span>
+            </button>
+          ) : (
+            <Link to="/classes" className="btn btn-primary">
+              <ScanLine className="size-4" />
+              <span>Scan a script</span>
+            </Link>
+          )}
         </div>
       </header>
 
@@ -178,9 +188,15 @@ export default function ReviewQueue() {
               <p style={{ fontSize: '0.8125rem', color: '#94A3B8', marginTop: '0.25rem' }}>
                 Upload a handwritten script to get started.
               </p>
-              <Link to="/upload" className="btn btn-primary btn-sm" style={{ marginTop: '1rem' }}>
-                Scan a script
-              </Link>
+              {onScanScript ? (
+                <button className="btn btn-primary btn-sm" style={{ marginTop: '1rem' }} onClick={onScanScript}>
+                  Scan a script
+                </button>
+              ) : (
+                <Link to="/classes" className="btn btn-primary btn-sm" style={{ marginTop: '1rem' }}>
+                  Scan a script
+                </Link>
+              )}
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
@@ -200,7 +216,7 @@ export default function ReviewQueue() {
                         {sub.studentName || sub.student_name || 'Unnamed student'}
                       </div>
                       <div style={{ fontSize: '0.8125rem', color: '#64748B', marginTop: '0.15rem' }}>
-                        {sub.subject || 'Physics'} · {sub.assignment?.title || 'Untitled assessment'} · {sub.assignment?.className || 'Class Test'}
+                        {sub.subject || sub.assignment?.subject || 'Subject not set'} · {sub.assignment?.title || 'Untitled assessment'} · {sub.assignment?.className || 'Class not set'}
                       </div>
                     </div>
 

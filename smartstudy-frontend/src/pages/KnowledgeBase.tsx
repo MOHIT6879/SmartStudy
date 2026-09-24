@@ -12,6 +12,8 @@ interface SubjectRecord {
   id: string;
   name: string;
   grade: string;
+  board: string;
+  className: string;
   lessonsCount: number;
   chunks: string;
   status: string;
@@ -28,6 +30,8 @@ export default function KnowledgeBase() {
   const [isAddSubjectOpen, setIsAddSubjectOpen] = useState(false);
   const [isAddLessonOpen, setIsAddLessonOpen] = useState(false);
   const [newSubjectTitle, setNewSubjectTitle] = useState('');
+  const [newSubjectGrade, setNewSubjectGrade] = useState('');
+  const [newSubjectBoard, setNewSubjectBoard] = useState('');
   const [newLessonTitle, setNewLessonTitle] = useState('');
 
   const [subjectsList, setSubjectsList] = useState<SubjectRecord[]>([]);
@@ -40,10 +44,12 @@ export default function KnowledgeBase() {
         const subjects: SubjectRecord[] = data.subjects.map((subject: any) => ({
           id: subject.id,
           name: subject.name,
-          grade: subject.name,
+          grade: subject.grade || '',
+          board: subject.board || '',
+          className: subject.className || subject.class_name || subject.name,
           lessonsCount: 0,
           chunks: 'Indexed chunk count unavailable',
-          status: 'Configured',
+          status: subject.grade ? 'Configured' : 'Missing grade',
           topics: []
         }));
         setSubjectsList(subjects);
@@ -54,10 +60,14 @@ export default function KnowledgeBase() {
   const handleAddSubject = async () => {
     const name = newSubjectTitle.trim();
     if (!name) return;
+    if (!newSubjectGrade.trim()) {
+      alert('Enter the grade / class for this subject so ingested material can be matched to it.');
+      return;
+    }
     const response = await fetch(`${API_BASE_URL}/api/subjects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name, grade: newSubjectGrade.trim(), board: newSubjectBoard.trim() })
     });
     const data = await response.json();
     if (!data.success) {
@@ -67,7 +77,9 @@ export default function KnowledgeBase() {
     setSubjectsList((current) => [...current.filter((item) => item.name !== data.subject.name), {
       id: data.subject.id,
       name: data.subject.name,
-      grade: data.subject.name,
+      grade: data.subject.grade || newSubjectGrade.trim(),
+      board: data.subject.board || newSubjectBoard.trim(),
+      className: data.subject.className || data.subject.class_name || `${newSubjectGrade.trim()} ${data.subject.name}`,
       lessonsCount: 0,
       chunks: 'Indexed chunk count unavailable',
       status: 'Configured',
@@ -75,6 +87,8 @@ export default function KnowledgeBase() {
     }].sort((a, b) => a.name.localeCompare(b.name)));
     setActiveSubject(data.subject.name);
     setNewSubjectTitle('');
+    setNewSubjectGrade('');
+    setNewSubjectBoard('');
     setIsAddSubjectOpen(false);
   };
 
@@ -87,8 +101,14 @@ export default function KnowledgeBase() {
     setIsIngesting(true);
     setIngestStatus(null);
     try {
+      const selected = subjectsList.find((item) => item.name === activeSubject);
+      if (!selected) {
+        alert('Pick a specific subject before ingesting so the material is indexed against the right class.');
+        setIsIngesting(false);
+        return;
+      }
       const formData = new FormData();
-      formData.append('className', activeSubject === 'All subjects' ? 'Grade 11 Physics' : activeSubject);
+      formData.append('className', selected.className);
       formData.append('topic', newLessonTitle || 'NCERT Textbook Material');
       uploadedFiles.forEach(f => formData.append('documents', f));
 
@@ -142,7 +162,7 @@ export default function KnowledgeBase() {
         
         {/* Subject Filter Pills */}
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', borderBottom: '1px solid var(--border)', paddingBottom: '0.75rem' }}>
-          {['All subjects', 'Physics', 'Psychology', 'General Science'].map((s) => (
+          {['All subjects', ...subjectsList.map((item) => item.name)].map((s) => (
             <button
               key={s}
               onClick={() => setActiveSubject(s)}
@@ -289,11 +309,35 @@ export default function KnowledgeBase() {
                 onChange={e => setNewSubjectTitle(e.target.value)}
               />
             </div>
+            <div className="form-group" style={{ marginBottom: '1rem' }}>
+              <label className="form-label">Grade / Class</label>
+              <input
+                type="text"
+                className="form-input"
+                placeholder="e.g. Grade 11"
+                value={newSubjectGrade}
+                onChange={e => setNewSubjectGrade(e.target.value)}
+              />
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: '#64748B' }}>
+                Lessons, papers and submissions are matched using "{`${newSubjectGrade.trim() || 'Grade'} ${newSubjectTitle.trim() || 'Subject'}`}".
+              </p>
+            </div>
+            <div className="form-group" style={{ marginBottom: '1rem' }}>
+              <label className="form-label">Board (optional)</label>
+              <input
+                type="text"
+                className="form-input"
+                placeholder="e.g. CBSE, Cambridge IGCSE"
+                value={newSubjectBoard}
+                onChange={e => setNewSubjectBoard(e.target.value)}
+              />
+            </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
               <button className="btn btn-secondary" onClick={() => setIsAddSubjectOpen(false)}>Cancel</button>
               <button 
                 className="btn btn-primary"
                 onClick={handleAddSubject}
+                disabled={!newSubjectTitle.trim() || !newSubjectGrade.trim()}
               >
                 Save Subject
               </button>

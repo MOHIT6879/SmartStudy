@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import SubmissionReviewModal from '../components/SubmissionReviewModal';
 import BulkEvaluationModal from '../components/BulkEvaluationModal';
 import { API_BASE_URL } from '../config/api';
+import LanguageSelect from '../components/LanguageSelect';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -568,15 +569,7 @@ export default function Dashboard() {
 
                 <div>
                   <label className="metric-label" style={{ display: 'block', marginBottom: '0.35rem' }}>Language Engine</label>
-                  <select 
-                    className="m-select" 
-                    value={subjectLanguage}
-                    onChange={(e) => setSubjectLanguage(e.target.value)}
-                  >
-                    <option value="English">English</option>
-                    <option value="Hindi (हिंदी)">Hindi (हिंदी)</option>
-                    <option value="Telugu (తెలుగు)">Telugu (తెలుగు)</option>
-                  </select>
+                  <LanguageSelect value={subjectLanguage} onChange={setSubjectLanguage} />
                 </div>
               </div>
 

@@ -23,7 +23,11 @@ test('Dynamic Model Routing & Integrations', async (t) => {
   await t.test('3. Reasoning Model Routing - Science', async () => {
     const questions = "1. What is photosynthesis? 2. Explain the process of plant reproduction.";
     const model = await determineReasoningModel('Science', questions);
-    // Because this makes a real API call to gemini-3.5-flash, the result will be one of the allowed options
+    if (process.env.PRIMARY_AI_PROVIDER?.toLowerCase() === 'sarvam') {
+      assert.strictEqual(model, 'sarvam', 'Configured Sarvam primary provider should be selected');
+      return;
+    }
+    // Without a configured Sarvam primary, the result will be one of the allowed Gemini options.
     const allowedModels = ['gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.6-standard', 'gemini-3.6-pro'];
     assert.ok(allowedModels.includes(model), `Science subject reasoning model should be one of the dynamically chosen gemini models, got: ${model}`);
   });
@@ -43,13 +47,11 @@ test('Dynamic Model Routing & Integrations', async (t) => {
   });
 
   await t.test('6. Ingest Sample Document - Grade 5 Science', async () => {
-    // Read the sample PDF/text file from the sample_pdfs directory
+    const sampleText = 'CHAPTER: Plant Reproduction (Grade 5 Science)\nPlant reproduction is the process by which plants generate new offspring. Plants can reproduce sexually or asexually. Sexual reproduction involves pollen transfer, fertilisation, and seed formation.';
     const filePath = path.resolve('../sample_pdfs/Grade5_Science_Plant_Reproduction.txt');
-    const fileBuffer = fs.readFileSync(filePath);
+    const fileBuffer = fs.existsSync(filePath) ? fs.readFileSync(filePath) : Buffer.from(sampleText);
 
-    // Call ingestPdfDocument with the mock file
-    // Note: If SUPABASE_URL is configured, this will actually insert chunks into the DB.
-    console.log(`\nTesting ingestion of: ${filePath}`);
+    console.log(`\nTesting ingestion of sample document...`);
     const result = await ingestPdfDocument(
       { buffer: fileBuffer, originalname: 'Grade5_Science_Plant_Reproduction.txt' },
       'Grade 5 Science',

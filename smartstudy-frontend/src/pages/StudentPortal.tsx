@@ -6,6 +6,7 @@ import {
   Send
 } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
+import LanguageSelect from '../components/LanguageSelect';
 
 export default function StudentPortal() {
   const [files, setFiles] = useState<File[]>([]);
@@ -25,16 +26,7 @@ export default function StudentPortal() {
     if (!assignment) return;
     setSelectedAssignmentId(assignment.id);
 
-    const cls = (assignment.className || '').toLowerCase();
-    const title = (assignment.title || '').toLowerCase();
-
-    if (cls.includes('telugu') || title.includes('telugu')) {
-      setSelectedLanguage('Telugu (తెలుగు)');
-    } else if (cls.includes('hindi') || title.includes('hindi')) {
-      setSelectedLanguage('Hindi (हिंदी)');
-    } else {
-      setSelectedLanguage('English');
-    }
+    setSelectedLanguage(assignment.language || 'English');
   };
 
   const fetchAssignments = async () => {
@@ -74,7 +66,7 @@ export default function StudentPortal() {
     formData.append('studentName', studentName);
     formData.append('selectedLanguage', selectedLanguage);
     formData.append('subject', activeAssignment?.subject || activeAssignment?.className || 'Class Test');
-    formData.append('className', activeAssignment?.className || 'Physics');
+    formData.append('className', activeAssignment?.className || activeAssignment?.subject || '');
 
     try {
       const res = await fetch(`${API_BASE_URL}/api/submissions`, {
@@ -127,7 +119,7 @@ export default function StudentPortal() {
               Assignment Submitted Successfully!
             </h2>
             <p style={{ color: '#64748B', marginTop: '0.5rem', fontSize: '0.9375rem' }}>
-              Your handwritten pages have been received by the <strong>MarkMate Optical AI Pipeline</strong>. Your teacher will verify the evaluated marks and a WhatsApp notification will be sent.
+              Your handwritten pages have been received by the <strong>PAATAM.AI Optical AI Pipeline</strong>. Your teacher will verify the evaluated marks and a WhatsApp notification will be sent.
             </p>
             <button 
               className="btn btn-primary"
@@ -173,7 +165,7 @@ export default function StudentPortal() {
                 {activeAssignment && (
                   <div style={{ marginTop: '0.65rem', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid #BFDBFE', background: '#EFF6FF', color: '#1E3A8A', fontSize: '0.8125rem' }}>
                     <strong>Submitting to:</strong> {activeAssignment.title} · {activeAssignment.subject || activeAssignment.className}
-                    <span style={{ display: 'block', marginTop: '0.2rem' }}>{activeAssignment.questions?.length || 0} questions · {activeAssignment.questions?.reduce((sum: number, question: any) => sum + (Number(question.marks) || 0), 0) || 0} marks</span>
+                    <span style={{ display: 'block', marginTop: '0.2rem' }}>{activeAssignment.questions?.length || 0} questions · {activeAssignment.questions?.reduce((sum: number, question: any) => sum + (Number(question.marks) || 0), 0) || 0} marks · {selectedLanguage}</span>
                   </div>
                 )}
               </div>
@@ -201,7 +193,7 @@ export default function StudentPortal() {
                     Click or drag your handwritten answer sheet photos here
                   </p>
                   <p style={{ fontSize: '0.8125rem', color: '#64748B', margin: '0.25rem 0 0 0' }}>
-                    JPG, PNG, or PDF · Supports multiple camera pages
+                    JPG, PNG, or PDF · Long PDFs are processed in ordered 10-page batches
                   </p>
                 </div>
               </div>
@@ -227,15 +219,7 @@ export default function StudentPortal() {
 
                 <div className="form-group">
                   <label className="form-label">Script Language</label>
-                  <select 
-                    className="form-select"
-                    value={selectedLanguage}
-                    onChange={e => setSelectedLanguage(e.target.value)}
-                  >
-                    <option value="English">English</option>
-                    <option value="Hindi (हिंदी)">Hindi (हिंदी)</option>
-                    <option value="Telugu (తెలుగు)">Telugu (తెలుగు)</option>
-                  </select>
+                  <LanguageSelect value={selectedLanguage} onChange={setSelectedLanguage} />
                 </div>
               </div>
 
@@ -281,12 +265,31 @@ export default function StudentPortal() {
                   <h4 style={{ fontSize: '0.9375rem', fontWeight: 700, marginBottom: '0.5rem' }}>
                     Assigned Questions Preview:
                   </h4>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '200px', overflowY: 'auto' }}>
-                    {activeAssignment.questions.map((q: any, i: number) => (
-                      <div key={i} style={{ fontSize: '0.8125rem', padding: '0.5rem', background: '#F8FAFC', borderRadius: '0.375rem', border: '1px solid #E2E8F0' }}>
-                        <strong>Q{i + 1}:</strong> {typeof q === 'string' ? q : q.text}
-                      </div>
-                    ))}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '320px', overflowY: 'auto' }}>
+                    {activeAssignment.questions.map((q: any, i: number) => {
+                      const previous = activeAssignment.questions[i - 1];
+                      const showStem = q?.stem && q.stem !== previous?.stem;
+                      const images = Array.isArray(q?.stimulus) ? q.stimulus.filter((item: any) => item?.url) : [];
+                      return (
+                        <div key={i} style={{ fontSize: '0.8125rem', padding: '0.5rem', background: '#F8FAFC', borderRadius: '0.375rem', border: '1px solid #E2E8F0' }}>
+                          {showStem && (
+                            <p style={{ margin: '0 0 0.4rem', fontSize: '0.75rem', color: '#475569', whiteSpace: 'pre-wrap', paddingLeft: '0.5rem', borderLeft: '3px solid #CBD5E1' }}>
+                              {q.stem}
+                            </p>
+                          )}
+                          {images.length > 0 && (
+                            <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.4rem' }}>
+                              {images.map((item: any, imageIndex: number) => (
+                                <a key={item.url} href={item.url} target="_blank" rel="noreferrer">
+                                  <img src={item.url} alt={item.caption || `Question reference ${imageIndex + 1}`} style={{ width: '120px', borderRadius: '0.375rem', border: '1px solid #CBD5E1' }} />
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                          <strong>{typeof q === 'string' ? `Q${i + 1}` : `Q${q.questionNo || i + 1}`}:</strong> {typeof q === 'string' ? q : q.text}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}

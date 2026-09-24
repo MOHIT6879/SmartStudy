@@ -81,7 +81,7 @@ export default function AgentPipelineStatus({ currentStep = 6, subData }: AgentP
               <div className="pipeline-text">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                   <Icon className="size-3.5 text-slate-500" />
-                  <p className="pipeline-name">{step.num}{step.name}</p>
+                  <p className="pipeline-name">{step.name}</p>
                 </div>
                 <p className="pipeline-subtext">{step.desc}</p>
               </div>

@@ -8,3 +8,37 @@ dist/
 CBSE Grade 11 Psychology TB/
 sample_pdfs/
 student answer sheets/
+
+# Provider comparison outputs and private benchmark images
+provider-evaluation/results/
+provider-evaluation/reports/
+provider-evaluation/dataset/english/
+provider-evaluation/dataset/mathematics/
+provider-evaluation/dataset/psychology/
+provider-evaluation/dataset/physics/
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# TypeScript generated cache
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.tsbuildinfo

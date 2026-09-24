@@ -3,7 +3,7 @@ import AdmZip from 'adm-zip';
 import fs from 'fs';
 import path from 'path';
 import { supabase } from '../db/supabase.js';
-import { generateEmbedding, generateQuestionsFromTextbook, analyzeStudentPaper } from './aiService.js';
+import { generateEmbedding, generateQuestionsFromTextbook, analyzeStudentPaper, getConfiguredGeminiModel } from './aiService.js';
 import { performOcr } from './ocrService.js';
 
 export interface Question {
@@ -14,6 +14,12 @@ export interface Question {
   options?: string[];
   correctAnswer?: string;
   rubricKey?: string;
+  number?: string;
+  partLabel?: string;
+  questionNo?: string;
+  stem?: string;
+  hasVisual?: boolean;
+  stimulus?: { page?: number; caption?: string; url?: string }[];
 }
 
 export interface EvaluationResult {
@@ -24,7 +30,7 @@ export interface EvaluationResult {
   knowledgeGaps: string[];
   feedback: string;
   socraticHint: string;
-  evaluationProvider: 'sarvam' | 'gemini-3.6-flash' | 'gemini-3.5-flash' | 'manual';
+  evaluationProvider: 'sarvam' | string | 'manual';
   evaluationStatus: 'completed' | 'fallback_completed' | 'manual_review';
   fallbackReason?: string;
 }
@@ -390,7 +396,8 @@ export async function evaluateStudentAnswerAgainstPdf(
   mimeType?: string,
   assignedQuestions?: Question[],
   reasoningModel?: string,
-  language?: string
+  language?: string,
+  markingSchemeText?: string
 ): Promise<EvaluationResult & { questionEvaluations?: any[] }> {
   let pdfChunks: string[] = [];
 
@@ -431,30 +438,44 @@ export async function evaluateStudentAnswerAgainstPdf(
 
   // Use Google Gemini 3.6 Vision API to perform OCR transcription and contextual RAG evaluation with assigned questions
   let visionRes;
-  let evaluationProvider: EvaluationResult['evaluationProvider'] = reasoningModel === 'sarvam' ? 'sarvam' : 'gemini-3.6-flash';
+  let evaluationProvider: EvaluationResult['evaluationProvider'] = reasoningModel === 'sarvam' ? 'sarvam' : getConfiguredGeminiModel();
   let evaluationStatus: EvaluationResult['evaluationStatus'] = 'completed';
   let fallbackReason: string | undefined;
   try {
-    visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], reasoningModel, language, ocrText);
+    visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], reasoningModel, language, ocrText, markingSchemeText || '');
   } catch (evaluationError) {
     if (reasoningModel !== 'sarvam') throw evaluationError;
-    console.warn('⚠️ [EVALUATION] Sarvam structured evaluation failed; using Gemini fallback:', evaluationError);
-    fallbackReason = evaluationError instanceof Error ? evaluationError.message : 'Sarvam evaluation failed.';
+    // Sarvam is the primary grader, so transient failures get a second and third chance before Gemini.
+    console.warn('⚠️ [EVALUATION] Sarvam structured evaluation failed; retrying Sarvam before any fallback:', evaluationError);
+    for (const delay of [5000, 15000]) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      try {
+        console.log(`🔁 [EVALUATION] Retrying Sarvam after ${delay / 1000}s...`);
+        visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], reasoningModel, language, ocrText, markingSchemeText || '');
+        break;
+      } catch (retryError) {
+        console.warn('⚠️ [EVALUATION] Sarvam retry failed:', retryError);
+      }
+    }
+  }
+  if (!visionRes && reasoningModel === 'sarvam') {
+    console.warn('⚠️ [EVALUATION] Sarvam exhausted its retries; using Gemini fallback.');
+    fallbackReason = 'Sarvam evaluation failed after retries.';
     evaluationStatus = 'fallback_completed';
-    evaluationProvider = 'gemini-3.6-flash';
+    evaluationProvider = getConfiguredGeminiModel();
     try {
-      visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], 'gemini-3.6-flash', language, ocrText);
+      visionRes = await analyzeStudentPaper(null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], getConfiguredGeminiModel(), language, ocrText, markingSchemeText || '');
     } catch (geminiError) {
       console.warn('⚠️ [EVALUATION] Gemini 3.6 fallback failed; retrying Gemini 3.5:', geminiError);
-      evaluationProvider = 'gemini-3.5-flash';
+      evaluationProvider = getConfiguredGeminiModel();
       try {
-        visionRes = await analyzeStudentPaper(imageInput || null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], 'gemini-3.5-flash', language, ocrText);
+        visionRes = await analyzeStudentPaper(null, mimeType || 'image/jpeg', pdfChunks, assignedQuestions || [], getConfiguredGeminiModel(), language, ocrText, markingSchemeText || '');
       } catch (finalError) {
         console.error('❌ [EVALUATION] All AI evaluation providers failed; routing to manual review:', finalError);
         evaluationProvider = 'manual';
         evaluationStatus = 'manual_review';
         const manualQuestions = (assignedQuestions || []).map((question, index) => ({
-          questionNo: `Q${index + 1}`,
+          questionNo: question.questionNo || `Q${index + 1}`,
           questionText: question.text,
           benchmarkKey: question.correctAnswer || question.rubricKey || 'Teacher review required.',
           studentAnswerSnippet: 'OCR is available for teacher review.',
@@ -478,6 +499,8 @@ export async function evaluateStudentAnswerAgainstPdf(
       }
     }
   }
+
+  if (!visionRes) throw new Error('Evaluation produced no result from any provider.');
 
   return {
     ocrText: visionRes.ocrText || ocrText,

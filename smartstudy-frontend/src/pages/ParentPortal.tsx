@@ -46,7 +46,7 @@ export default function ParentPortal() {
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                <span style={{ fontSize: '1rem', fontWeight: 700 }}>MarkMate School AI Desk</span>
+                <span style={{ fontSize: '1rem', fontWeight: 700 }}>PAATAM.AI School AI Desk</span>
                 <span style={{ color: '#34D399', fontSize: '0.75rem', fontWeight: 600 }}>✔ Official</span>
               </div>
               <span style={{ fontSize: '0.75rem', color: '#E2E8F0', fontWeight: 400 }}>Automated WhatsApp Dispatch System</span>
@@ -64,7 +64,7 @@ export default function ParentPortal() {
 
             <div className="wa-bubble">
               <p style={{ margin: 0, color: '#1F2937', fontSize: '0.875rem' }}>
-                👋 Welcome to MarkMate Parent Digest! You will receive instant notifications when teachers dispatch assignments and approve evaluated paper copies.
+                👋 Welcome to PAATAM.AI Parent Digest! You will receive instant notifications when teachers dispatch assignments and approve evaluated paper copies.
               </p>
               <div style={{ fontSize: '0.6875rem', color: '#94A3B8', textAlign: 'right', marginTop: '0.25rem' }}>09:00 AM</div>
             </div>

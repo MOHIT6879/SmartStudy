@@ -1,4 +1,4 @@
--- SmartStudy / MarkMate Supabase schema
+-- SmartStudy / PAATAM.AI Supabase schema
 -- Paste this entire file into the Supabase SQL Editor. Safe to rerun.
 
 create extension if not exists vector;
@@ -8,6 +8,26 @@ create table if not exists public.subjects (
   id text primary key,
   name text not null unique,
   created_at timestamptz not null default now()
+);
+
+-- A teacher's class, e.g. "Grade 10 - A". Top level of the Classes navigation.
+create table if not exists public.classes (
+  id text primary key,
+  name text not null,
+  section text,
+  created_at timestamptz not null default now()
+);
+
+-- Section is mandatory going forward for new classes.
+alter table public.classes add column if not exists section text;
+
+-- A subject taught within a class, e.g. "Physics" inside "Grade 10 - A".
+create table if not exists public.class_subjects (
+  id text primary key,
+  class_id text not null references public.classes(id) on delete cascade,
+  subject_name text not null,
+  created_at timestamptz not null default now(),
+  unique (class_id, subject_name)
 );
 
 create table if not exists public.assignments (
@@ -29,6 +49,17 @@ alter table public.assignments add column if not exists language text not null d
 alter table public.assignments add column if not exists difficulty text not null default 'Medium';
 alter table public.assignments add column if not exists duration_minutes integer not null default 60;
 alter table public.assignments add column if not exists reasoning_model text;
+-- Question paper deployment scoping: which class/subject this paper belongs to.
+alter table public.assignments add column if not exists class_id text references public.classes(id) on delete set null;
+alter table public.assignments add column if not exists class_subject_id text references public.class_subjects(id) on delete set null;
+-- Canonical teacher-supplied answer key/marking scheme for this paper, used by grading.
+alter table public.assignments add column if not exists answer_key_text text;
+-- Original source documents used by the teacher review workspace.
+alter table public.assignments add column if not exists question_paper_url text;
+alter table public.assignments add column if not exists answer_key_url text;
+
+create index if not exists class_subjects_class_id_idx on public.class_subjects (class_id);
+create index if not exists assignments_class_subject_id_idx on public.assignments (class_subject_id);
 
 create table if not exists public.submissions (
   id text primary key,
@@ -41,21 +72,33 @@ create table if not exists public.submissions (
   sample_paper_urls jsonb not null default '[]'::jsonb,
   ocr_text text,
   score numeric,
+  max_score numeric,
   feedback text,
   socratic_hint text,
   ai_evaluation_json jsonb,
+  evaluation_provider text,
+  evaluation_status text,
+  fallback_reason text,
   status text not null default 'pending_review',
   submitted_at timestamptz not null default now(),
   final_score numeric,
   final_feedback text,
-  final_hint text
+  final_hint text,
+  final_evaluation_json jsonb
 );
 
 alter table public.submissions add column if not exists sample_paper_urls jsonb not null default '[]'::jsonb;
 alter table public.submissions add column if not exists ai_evaluation_json jsonb;
 alter table public.submissions add column if not exists final_score numeric;
+alter table public.submissions add column if not exists max_score numeric;
+alter table public.submissions alter column score type numeric using score::numeric;
+alter table public.submissions alter column final_score type numeric using final_score::numeric;
 alter table public.submissions add column if not exists final_feedback text;
 alter table public.submissions add column if not exists final_hint text;
+alter table public.submissions add column if not exists evaluation_provider text;
+alter table public.submissions add column if not exists evaluation_status text;
+alter table public.submissions add column if not exists fallback_reason text;
+alter table public.submissions add column if not exists final_evaluation_json jsonb;
 
 create table if not exists public.notifications (
   id text primary key,
@@ -114,6 +157,8 @@ $$;
 
 grant usage on schema public to anon, authenticated, service_role;
 grant select, insert, update, delete on public.subjects to anon, authenticated, service_role;
+grant select, insert, update, delete on public.classes to anon, authenticated, service_role;
+grant select, insert, update, delete on public.class_subjects to anon, authenticated, service_role;
 grant select, insert, update, delete on public.assignments to anon, authenticated, service_role;
 grant select, insert, update, delete on public.submissions to anon, authenticated, service_role;
 grant select, insert, update, delete on public.notifications to anon, authenticated, service_role;

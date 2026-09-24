@@ -8,6 +8,10 @@ import KnowledgeBase from './pages/KnowledgeBase';
 import ExamGenerator from './pages/ExamGenerator';
 import StudentPortal from './pages/StudentPortal';
 import ParentPortal from './pages/ParentPortal';
+import Classes from './pages/Classes';
+import ClassDetail from './pages/ClassDetail';
+import SubjectWorkspace from './pages/SubjectWorkspace';
+import PaperDetail from './pages/PaperDetail';
 import { API_BASE_URL } from './config/api';
 
 // Route dispatcher that handles both path routing (/upload, /submissions) and legacy search params (?tab=scan)
@@ -44,14 +48,28 @@ function App() {
 
   return (
     <Router>
+      <AppLayout onClearDb={handleClearDb} />
+    </Router>
+  );
+}
+
+function AppLayout({ onClearDb }: { onClearDb: () => void }) {
+  const location = useLocation();
+  const isReviewWorkspace = /^\/(review|verify)\//.test(location.pathname);
+
+  return (
       <div className="app-shell-container">
-        {/* MarkMate Left Navigation Sidebar */}
-        <Sidebar onClearDb={handleClearDb} />
+        {/* PAATAM.AI Left Navigation Sidebar */}
+        {!isReviewWorkspace && <Sidebar onClearDb={onClearDb} />}
 
         {/* Main Workspace Area */}
         <div className="app-main-content">
           <Routes>
             <Route path="/" element={<MainRouteDispatcher />} />
+            <Route path="/classes" element={<Classes />} />
+            <Route path="/classes/:classId" element={<ClassDetail />} />
+            <Route path="/classes/:classId/:classSubjectId" element={<SubjectWorkspace />} />
+            <Route path="/papers/:assignmentId" element={<PaperDetail />} />
             <Route path="/upload" element={<ScanGrade />} />
             <Route path="/submissions" element={<ReviewQueue />} />
             <Route path="/knowledge" element={<KnowledgeBase />} />
@@ -63,7 +81,7 @@ function App() {
           </Routes>
         </div>
       </div>
-    </Router>
+    
   );
 }
 

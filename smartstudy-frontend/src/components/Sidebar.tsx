@@ -1,14 +1,13 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { 
   LayoutDashboard, 
-  ScanLine, 
-  FileStack, 
   BookOpen, 
   Sparkles, 
   GraduationCap, 
   MessageSquare,
   Trash2,
-  CheckCircle2
+  CheckCircle2,
+  Layers
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -37,7 +36,7 @@ export default function Sidebar({ onClearDb }: SidebarProps) {
           <GraduationCap className="size-5 text-white" />
         </div>
         <div>
-          <p className="sidebar-brand-name">MarkMate</p>
+          <p className="sidebar-brand-name">PAATAM.AI</p>
           <p className="sidebar-brand-tagline">AI GRADING DESK</p>
         </div>
       </div>
@@ -54,19 +53,11 @@ export default function Sidebar({ onClearDb }: SidebarProps) {
         </NavLink>
 
         <NavLink 
-          to="/upload" 
-          className={({ isActive: isNavActive }) => `sidebar-nav-link ${isNavActive || isActive('/', 'scan') ? 'active' : ''}`}
+          to="/classes" 
+          className={({ isActive: isNavActive }) => `sidebar-nav-link ${isNavActive ? 'active' : ''}`}
         >
-          <ScanLine className="size-4 sidebar-nav-icon shrink-0" />
-          <span>Scan & Grade</span>
-        </NavLink>
-
-        <NavLink 
-          to="/submissions" 
-          className={({ isActive: isNavActive }) => `sidebar-nav-link ${isNavActive || isActive('/', 'queue') ? 'active' : ''}`}
-        >
-          <FileStack className="size-4 sidebar-nav-icon shrink-0" />
-          <span>Review Queue</span>
+          <Layers className="size-4 sidebar-nav-icon shrink-0" />
+          <span>Classes</span>
         </NavLink>
 
         <NavLink 

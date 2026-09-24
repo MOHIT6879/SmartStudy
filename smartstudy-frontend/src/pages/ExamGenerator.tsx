@@ -10,13 +10,19 @@ import {
   Clock
 } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
+import LanguageSelect from '../components/LanguageSelect';
+
+type SubjectOption = { id: string; name: string; grade?: string; board?: string; className?: string };
 
 export default function ExamGenerator() {
   const [subject, setSubject] = useState('');
-  const [subjects, setSubjects] = useState<Array<{ id: string; name: string }>>([]);
+  const [subjects, setSubjects] = useState<SubjectOption[]>([]);
   const [newSubject, setNewSubject] = useState('');
+  const [newSubjectGrade, setNewSubjectGrade] = useState('');
+  const [newSubjectBoard, setNewSubjectBoard] = useState('');
   const [paperTitle, setPaperTitle] = useState('');
   const [difficulty, setDifficulty] = useState('Medium');
+  const [paperLanguage, setPaperLanguage] = useState('English');
   const [numQuestions, setNumQuestions] = useState(5);
   const [minutes, setMinutes] = useState(60);
   const [focusTopics, setFocusTopics] = useState('');
@@ -45,10 +51,14 @@ export default function ExamGenerator() {
   const handleAddSubject = async () => {
     const name = newSubject.trim();
     if (!name) return;
+    if (!newSubjectGrade.trim()) {
+      alert('Enter the grade / class for this subject so papers and knowledge base material can be matched to it.');
+      return;
+    }
     const res = await fetch(`${API_BASE_URL}/api/subjects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name, grade: newSubjectGrade.trim(), board: newSubjectBoard.trim() })
     });
     const data = await res.json();
     if (!data.success) {
@@ -58,7 +68,13 @@ export default function ExamGenerator() {
     setSubjects((current) => [...current.filter((item) => item.name !== data.subject.name), data.subject].sort((a, b) => a.name.localeCompare(b.name)));
     setSubject(data.subject.name);
     setNewSubject('');
+    setNewSubjectGrade('');
+    setNewSubjectBoard('');
   };
+
+  const activeSubject = subjects.find((item) => item.name === subject);
+  // Every request keys off the subject's own stored class, never a hardcoded grade.
+  const activeClassName = activeSubject?.className || activeSubject?.name || subject;
 
   const handleGeneratePaper = async () => {
     if (!subject) {
@@ -68,9 +84,9 @@ export default function ExamGenerator() {
     setIsGenerating(true);
     try {
       const formData = new FormData();
-      formData.append('className', `Grade 11 ${subject}`);
+      formData.append('className', activeClassName);
       formData.append('topic', paperTitle || 'Mid-term Assessment');
-      formData.append('subjectLanguage', 'English');
+      formData.append('subjectLanguage', paperLanguage);
       formData.append('numQuestions', numQuestions.toString());
       if (focusTopics) formData.append('subTopicScope', focusTopics);
 
@@ -105,7 +121,8 @@ export default function ExamGenerator() {
       const formData = new FormData();
       files.forEach(f => formData.append('questionPaper', f));
       formData.append('subject', subject);
-      formData.append('className', `Grade 11 ${subject}`);
+      formData.append('className', activeClassName);
+      formData.append('subjectLanguage', paperLanguage);
 
       const res = await fetch(`${API_BASE_URL}/api/rag/extract-questions-from-image`, {
         method: 'POST',
@@ -114,13 +131,19 @@ export default function ExamGenerator() {
       const data = await res.json();
       if (data.success && Array.isArray(data.questions) && data.questions.length > 0) {
         setQuestions(prev => [...prev, ...data.questions.map((q: any, i: number) => ({
-          id: `photo-${Date.now()}-${i}`,
+          id: q.id || `photo-${Date.now()}-${i}`,
           text: q.text || q,
           marks: Number(q.marks) || 0,
           section: q.section || q.part || 'Questions',
+          number: q.number,
+          partLabel: q.partLabel,
+          questionNo: q.questionNo,
+          stem: q.stem,
+          hasVisual: q.hasVisual,
+          stimulus: q.stimulus,
           correctAnswer: q.correctAnswer || 'Extracted reference answer'
         }))]);
-        alert(`✅ Extracted ${data.questions.length} questions from question paper photo!`);
+        alert(`✅ Extracted ${data.questions.length} question parts from the question paper!`);
       }
     } catch (err) {
       console.error(err);
@@ -138,9 +161,9 @@ export default function ExamGenerator() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: paperTitle,
-          className: `Grade 11 ${subject}`,
+          className: activeClassName,
           subject,
-          language: 'English',
+          language: paperLanguage,
           difficulty,
           durationMinutes: minutes,
           questions
@@ -203,17 +226,41 @@ export default function ExamGenerator() {
                   onChange={(e) => setSubject(e.target.value)}
                 >
                   <option value="">Select a subject</option>
-                  {subjects.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}
+                  {subjects.map((item) => <option key={item.id} value={item.name}>{item.className || item.name}</option>)}
                 </select>
-                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                {subject && (
+                  <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: activeSubject?.grade ? '#475569' : '#B45309' }}>
+                    {activeSubject?.grade
+                      ? `Class key: ${activeClassName}${activeSubject?.board ? ` • ${activeSubject.board}` : ''}`
+                      : 'This subject has no grade configured, so knowledge base matching may be unreliable. Re-add it with a grade.'}
+                  </p>
+                )}
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
                   <input
                     type="text"
                     className="form-input"
+                    style={{ flex: '2 1 10rem' }}
                     value={newSubject}
                     onChange={(e) => setNewSubject(e.target.value)}
-                    placeholder="Enter a new subject"
+                    placeholder="Subject name"
                   />
-                  <button type="button" className="btn btn-secondary" onClick={handleAddSubject} disabled={!newSubject.trim()}>
+                  <input
+                    type="text"
+                    className="form-input"
+                    style={{ flex: '1 1 7rem' }}
+                    value={newSubjectGrade}
+                    onChange={(e) => setNewSubjectGrade(e.target.value)}
+                    placeholder="Grade / class"
+                  />
+                  <input
+                    type="text"
+                    className="form-input"
+                    style={{ flex: '1 1 7rem' }}
+                    value={newSubjectBoard}
+                    onChange={(e) => setNewSubjectBoard(e.target.value)}
+                    placeholder="Board (optional)"
+                  />
+                  <button type="button" className="btn btn-secondary" onClick={handleAddSubject} disabled={!newSubject.trim() || !newSubjectGrade.trim()}>
                     <Plus className="size-4" />
                     <span>Add</span>
                   </button>
@@ -229,6 +276,11 @@ export default function ExamGenerator() {
                   value={paperTitle}
                   onChange={(e) => setPaperTitle(e.target.value)}
                 />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Question paper language</label>
+                <LanguageSelect value={paperLanguage} onChange={setPaperLanguage} />
               </div>
 
               <div className="form-group">
@@ -307,10 +359,10 @@ export default function ExamGenerator() {
                   style={{ flex: 1, cursor: 'pointer', textAlign: 'center' }}
                 >
                   <Camera className="size-3.5" />
-                  <span>{isExtractingPhoto ? 'Extracting...' : 'Photo Extract'}</span>
+                  <span>{isExtractingPhoto ? 'Extracting...' : 'Upload PDF / Photos'}</span>
                   <input 
                     type="file" 
-                    accept="image/*" 
+                    accept="image/*,application/pdf" 
                     multiple
                     style={{ display: 'none' }}
                     onChange={handlePhotoUpload}
@@ -390,7 +442,7 @@ export default function ExamGenerator() {
                   <div key={q.id || idx} style={{ padding: '1rem', background: '#F8FAFC', borderRadius: '0.5rem', border: '1px solid #E2E8F0' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.4rem' }}>
                       <span style={{ fontWeight: 800, color: '#2563EB', fontSize: '0.875rem' }}>
-                        Question {idx + 1} ({q.marks || 5} Marks)
+                        {q.questionNo ? `Question ${q.questionNo}` : `Question ${idx + 1}`} ({q.marks || 5} Marks)
                       </span>
                       <button 
                         style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer' }}
@@ -399,6 +451,22 @@ export default function ExamGenerator() {
                         <Trash2 className="size-3.5" />
                       </button>
                     </div>
+
+                    {q.stem && q.stem !== questions[idx - 1]?.stem && (
+                      <p style={{ margin: '0 0 0.5rem', fontSize: '0.78rem', color: '#475569', whiteSpace: 'pre-wrap', maxHeight: '8rem', overflowY: 'auto', paddingLeft: '0.6rem', borderLeft: '3px solid #CBD5E1' }}>
+                        {q.stem}
+                      </p>
+                    )}
+
+                    {Array.isArray(q.stimulus) && q.stimulus.length > 0 && (
+                      <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                        {q.stimulus.filter((item: any) => item?.url).map((item: any, imageIndex: number) => (
+                          <a key={item.url} href={item.url} target="_blank" rel="noreferrer">
+                            <img src={item.url} alt={item.caption || `Reference ${imageIndex + 1}`} style={{ width: '110px', borderRadius: '0.375rem', border: '1px solid #CBD5E1' }} />
+                          </a>
+                        ))}
+                      </div>
+                    )}
 
                     <input 
                       type="text" 

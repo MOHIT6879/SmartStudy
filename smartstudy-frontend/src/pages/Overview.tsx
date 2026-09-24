@@ -35,12 +35,19 @@ export default function Overview() {
     }
   };
 
+  const getSubMaxScore = (sub: any) => 
+    sub.maxScore || sub.aiEvaluation?.maxScore || sub.assignment?.questions?.reduce((sum: number, q: any) => sum + (Number(q.marks) || 0), 0) || ((sub.finalScore ?? sub.aiEvaluation?.score ?? 0) <= 5 && (sub.finalScore ?? sub.aiEvaluation?.score ?? 0) > 0 ? 5 : 40);
+
   const pendingCount = submissions.filter(s => s.status === 'pending_review').length;
   const scoredSubmissions = submissions.filter((submission) =>
     typeof (submission.finalScore ?? submission.aiEvaluation?.score) === 'number'
   );
   const avgScore = scoredSubmissions.length > 0
-    ? (scoredSubmissions.reduce((acc, curr) => acc + (curr.finalScore ?? curr.aiEvaluation.score), 0) / scoredSubmissions.length).toFixed(0) + '%'
+    ? (scoredSubmissions.reduce((acc, curr) => {
+        const scoreVal = curr.finalScore ?? curr.aiEvaluation?.score ?? 0;
+        const maxScore = getSubMaxScore(curr);
+        return acc + Math.min(100, Math.max(0, (scoreVal / maxScore) * 100));
+      }, 0) / scoredSubmissions.length).toFixed(0) + '%'
     : '—';
 
   const minutesSaved = submissions.length * 14;
@@ -65,7 +72,7 @@ export default function Overview() {
             <Layers className="size-4" />
             <span>Bulk Stack (50-100)</span>
           </button>
-          <Link to="/upload" className="btn btn-primary">
+          <Link to="/classes" className="btn btn-primary">
             <ScanLine className="size-4" />
             <span>Scan a script</span>
           </Link>
@@ -145,7 +152,13 @@ export default function Overview() {
                   <p style={{ color: '#64748B', fontSize: '0.875rem', margin: 0 }}>No scored submissions yet.</p>
                 ) : Array.from(new Set(scoredSubmissions.map((submission) => submission.subject || 'Unassigned subject'))).map((subject) => {
                   const subjectSubmissions = scoredSubmissions.filter((submission) => (submission.subject || 'Unassigned subject') === subject);
-                  const subjectAverage = Math.round(subjectSubmissions.reduce((sum, submission) => sum + (submission.finalScore ?? submission.aiEvaluation.score), 0) / subjectSubmissions.length);
+                  const subjectAverage = Math.round(
+                    subjectSubmissions.reduce((sum, submission) => {
+                      const scoreVal = submission.finalScore ?? submission.aiEvaluation?.score ?? 0;
+                      const maxScore = getSubMaxScore(submission);
+                      return sum + Math.min(100, Math.max(0, (scoreVal / maxScore) * 100));
+                    }, 0) / subjectSubmissions.length
+                  );
                   return (
                     <div key={subject}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem', fontWeight: 600, marginBottom: '0.35rem' }}>
@@ -153,7 +166,7 @@ export default function Overview() {
                         <span style={{ color: '#2563EB' }}>{subjectAverage}% Avg</span>
                       </div>
                       <div style={{ height: '8px', background: '#F1F5F9', borderRadius: '9999px', overflow: 'hidden' }}>
-                        <div style={{ width: `${subjectAverage}%`, height: '100%', background: '#2563EB', borderRadius: '9999px' }} />
+                        <div style={{ width: `${Math.min(100, subjectAverage)}%`, height: '100%', background: '#2563EB', borderRadius: '9999px' }} />
                       </div>
                     </div>
                   );
@@ -184,7 +197,7 @@ export default function Overview() {
                   <p style={{ color: '#64748B', fontSize: '0.875rem', margin: 0 }}>
                     No scripts graded yet — upload a handwritten answer sheet to start.
                   </p>
-                  <Link to="/upload" className="btn btn-primary btn-sm" style={{ marginTop: '0.75rem' }}>
+                  <Link to="/classes" className="btn btn-primary btn-sm" style={{ marginTop: '0.75rem' }}>
                     Scan First Script
                   </Link>
                 </div>
@@ -192,7 +205,7 @@ export default function Overview() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
                   {submissions.slice(0, 5).map((sub) => {
                     const scoreVal = sub.finalScore ?? sub.aiEvaluation?.score ?? 0;
-                    const maxScore = sub.maxScore || (scoreVal > 20 ? 100 : 5);
+                    const maxScore = getSubMaxScore(sub);
                     const pctVal = Math.round((scoreVal / maxScore) * 100);
                     const isApproved = sub.status === 'approved';
                     const isProcessing = sub.status === 'processing';

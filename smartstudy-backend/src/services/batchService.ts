@@ -1,6 +1,8 @@
 import AdmZip from 'adm-zip';
-import { evaluateStudentAnswerAgainstPdf, parsePdfBuffer } from './ragService.js';
-import { performOcr } from './ocrService.js';
+import { evaluateStudentAnswerAgainstPdf } from './ragService.js';
+import { getConfiguredGeminiModel } from './aiService.js';
+import { expandPdfFilesToImages } from './pdfRasterService.js';
+import { performOcrPages } from './ocrService.js';
 import { supabase, uploadImageToSupabase } from '../db/supabase.js';
 
 export interface BatchItemFile {
@@ -8,6 +10,10 @@ export interface BatchItemFile {
   originalname: string;
   mimetype: string;
   studentName?: string;
+  // Uniquely identifies which student this page belongs to. Only pages extracted from the same
+  // ZIP folder share a groupKey (legitimate multi-page submission); everything else is unique per
+  // file so similarly-named uploads (e.g. IMG_1234.jpg, IMG_1235.jpg) are never merged together.
+  groupKey?: string;
 }
 
 export interface BatchJob {
@@ -39,6 +45,7 @@ const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
  */
 function unpackAndNormalizeFiles(rawFiles: BatchItemFile[]): BatchItemFile[] {
   const normalizedFiles: BatchItemFile[] = [];
+  let uniqueCounter = 0;
 
   for (const file of rawFiles) {
     const filename = file.originalname || 'submission';
@@ -78,6 +85,7 @@ function unpackAndNormalizeFiles(rawFiles: BatchItemFile[]): BatchItemFile[] {
 
           const pathParts = entryName.split(/[\/\\]/).filter(Boolean);
           let extractedStudentName: string | undefined;
+          let groupKey: string;
 
           // Detect student name from ZIP directory folder structure
           if (pathParts.length > 1) {
@@ -85,6 +93,11 @@ function unpackAndNormalizeFiles(rawFiles: BatchItemFile[]): BatchItemFile[] {
             if (folderName && !folderName.match(/^(images|files|pages|uploads|docs|pdf|pdfs|sheets|submissions)$/i)) {
               extractedStudentName = folderName.replace(/[-_]/g, ' ').trim();
             }
+            // Files under the same ZIP folder are genuinely multi-page pages of one student.
+            groupKey = `zipfolder:${pathParts.slice(0, -1).join('/')}`;
+          } else {
+            // Flat entry with no folder context — treat as its own standalone submission.
+            groupKey = `zipflat:${uniqueCounter++}`;
           }
 
           if (!extractedStudentName) {
@@ -95,7 +108,8 @@ function unpackAndNormalizeFiles(rawFiles: BatchItemFile[]): BatchItemFile[] {
             buffer: entryData,
             originalname: pathParts[pathParts.length - 1] || entryName,
             mimetype: mime,
-            studentName: extractedStudentName
+            studentName: extractedStudentName,
+            groupKey
           });
         }
       } catch (err) {
@@ -117,7 +131,10 @@ function unpackAndNormalizeFiles(rawFiles: BatchItemFile[]): BatchItemFile[] {
         buffer: file.buffer,
         originalname: file.originalname,
         mimetype: mime,
-        studentName: inferredName
+        studentName: inferredName,
+        // One loose top-level upload = one student's submission — never merge with another file
+        // just because the filenames happen to look similar.
+        groupKey: `loose:${uniqueCounter++}`
       });
     }
   }
@@ -133,7 +150,8 @@ export function createBatchJob(
   assignmentId?: string,
   selectedLanguage: string = 'English',
   targetClassName?: string,
-  targetSubject?: string
+  targetSubject?: string,
+  markingSchemeText?: string
 ): BatchJob {
   const jobId = 'batch-' + Date.now();
   const now = new Date().toISOString();
@@ -154,7 +172,7 @@ export function createBatchJob(
   batchJobs[jobId] = newJob;
 
   // Launch background processing asynchronously
-  processBatchQueue(jobId, files, assignmentId, selectedLanguage, targetClassName, targetSubject).catch((err) => {
+  processBatchQueue(jobId, files, assignmentId, selectedLanguage, targetClassName, targetSubject, markingSchemeText).catch((err) => {
     console.error(`❌ Batch Job ${jobId} execution error:`, err);
     if (batchJobs[jobId]) {
       batchJobs[jobId].status = 'failed';
@@ -181,7 +199,8 @@ async function processBatchQueue(
   assignmentId?: string,
   selectedLanguage: string = 'English',
   targetClassName?: string,
-  targetSubject?: string
+  targetSubject?: string,
+  markingSchemeText?: string
 ) {
   const job = batchJobs[jobId];
   if (!job) return;
@@ -192,20 +211,36 @@ async function processBatchQueue(
   // 1. Unpack ZIP archives and normalize all files (ZIPs, PDFs, Images)
   const unpackedFiles = unpackAndNormalizeFiles(rawFiles);
 
-  const className = targetClassName || (selectedLanguage.includes('Telugu') ? 'Grade 3 Telugu (తెలుగు)' : 'Grade 5 General Science');
-  const subjectName = targetSubject || (selectedLanguage.includes('Telugu') ? 'Varnamala' : 'Science & Physics');
+  let className = targetClassName || 'General Class';
+  let subjectName = targetSubject || 'Unassigned Subject';
+  let assignedQuestions: any[] = [];
+  let reasoningModel = process.env.PRIMARY_AI_PROVIDER?.toLowerCase() === 'sarvam' ? 'sarvam' : getConfiguredGeminiModel();
+  if (!assignmentId) throw new Error('A dispatched assignment is required for bulk evaluation.');
+  const { data: assignment, error: assignmentError } = await supabase.from('assignments').select('*').eq('id', assignmentId).single();
+  if (assignmentError || !assignment) throw new Error(`Assignment '${assignmentId}' could not be loaded for bulk evaluation.`);
+  className = assignment.class_name || className;
+  subjectName = assignment.subject || assignment.class_name || subjectName;
+  assignedQuestions = typeof assignment.questions_json === 'string' ? JSON.parse(assignment.questions_json || '[]') : assignment.questions_json;
+  if (!Array.isArray(assignedQuestions) || assignedQuestions.length === 0) throw new Error(`Assignment '${assignmentId}' has no questions.`);
+  const effectiveMarkingScheme = (markingSchemeText || '').trim() || (assignment.answer_key_text || '').trim();
+  if (process.env.PRIMARY_AI_PROVIDER?.toLowerCase() !== 'sarvam' && assignment.reasoning_model) reasoningModel = assignment.reasoning_model;
 
-  // 2. Group files by student name or filename prefix
+  // 2. Group files by groupKey (only pages from the same ZIP folder share a group — see
+  // unpackAndNormalizeFiles). The extracted/inferred name is used purely as a display label.
   const studentGroups: Record<string, BatchItemFile[]> = {};
+  const groupDisplayNames: Record<string, string> = {};
   for (const file of unpackedFiles) {
-    const nameKey = file.studentName || extractStudentNameFromFilename(file.originalname) || `Student ${Object.keys(studentGroups).length + 1}`;
-    if (!studentGroups[nameKey]) {
-      studentGroups[nameKey] = [];
+    const key = file.groupKey || `ungrouped:${Object.keys(studentGroups).length}`;
+    if (!studentGroups[key]) {
+      studentGroups[key] = [];
+      groupDisplayNames[key] = file.studentName || `Student ${Object.keys(studentGroups).length + 1}`;
     }
-    studentGroups[nameKey].push(file);
+    studentGroups[key].push(file);
   }
 
-  const studentEntries = Object.entries(studentGroups);
+  const studentEntries = Object.entries(studentGroups).map(
+    ([key, groupFiles]) => [groupDisplayNames[key], groupFiles] as [string, BatchItemFile[]]
+  );
   job.total = studentEntries.length;
 
   console.log(`🚀 Starting Batch Job ${jobId}: ${studentEntries.length} student papers (${unpackedFiles.length} extracted files). Throttled for 15 RPM Free Gemini API...`);
@@ -218,12 +253,12 @@ async function processBatchQueue(
     const primaryFile = pageFiles.find(f => f.mimetype === 'application/pdf') || pageFiles[0];
 
     try {
-      // Upload images/PDFs to Supabase Storage
+      // Upload images/PDFs to Supabase Storage directly without PDF page expansion
       const cloudUrls: string[] = [];
       if (isSupabaseConfigured()) {
         for (const pFile of pageFiles) {
           try {
-            const url = await uploadImageToSupabase(pFile.buffer, pFile.originalname, pFile.mimetype);
+            const url = await uploadImageToSupabase(pFile.buffer, pFile.originalname || 'submission.pdf', pFile.mimetype || 'application/pdf');
             if (url) cloudUrls.push(url);
           } catch (e) {
             console.warn(`⚠️ Storage upload notice for ${pFile.originalname}:`, e);
@@ -232,32 +267,20 @@ async function processBatchQueue(
       }
       const primaryCloudUrl = cloudUrls.length > 0 ? cloudUrls[0] : '';
 
-      // Perform OCR & Text Extraction
-      let ocrText = '';
-      let langCode = selectedLanguage.substring(0, 3).toUpperCase();
-
-      if (primaryFile.mimetype === 'application/pdf') {
-        try {
-          ocrText = await parsePdfBuffer(primaryFile.buffer);
-        } catch (e) {
-          ocrText = '[Scanned PDF student answer sheet]';
-        }
-      } else {
-        try {
-          const ocrRes = await performOcr(primaryFile.buffer, selectedLanguage);
-          ocrText = ocrRes.ocrText;
-          langCode = ocrRes.langCode;
-        } catch (e) {
-          ocrText = '[Scanned handwritten paper upload]';
-        }
-      }
+      const ocrResult = await performOcrPages(pageBuffers, selectedLanguage, pageFiles.map((file) => file.mimetype), subjectName);
+      const ocrText = ocrResult.ocrText;
+      const langCode = ocrResult.langCode;
 
       // Evaluate student answer paper via Direct Google Gemini API
       const pdfEval = await evaluateStudentAnswerAgainstPdf(
         ocrText,
         className,
         pageBuffers,
-        primaryFile.mimetype
+        primaryFile.mimetype,
+        assignedQuestions,
+        reasoningModel,
+        selectedLanguage,
+        effectiveMarkingScheme
       );
 
       const finalOcrText = pdfEval.ocrText || ocrText;
@@ -267,10 +290,14 @@ async function processBatchQueue(
       const aiEvalData = {
         ocrText: finalOcrText,
         score: pdfEval.score,
+        maxScore: pdfEval.maxScore,
         excelledAreas: pdfEval.excelledAreas,
         knowledgeGaps: pdfEval.knowledgeGaps,
         feedback: pdfEval.feedback,
         socraticHint: pdfEval.socraticHint,
+        evaluationProvider: pdfEval.evaluationProvider,
+        evaluationStatus: pdfEval.evaluationStatus,
+        fallbackReason: pdfEval.fallbackReason,
         questionEvaluations: pdfEval.questionEvaluations
       };
 
@@ -285,10 +312,14 @@ async function processBatchQueue(
         sample_paper_urls: JSON.stringify(cloudUrls),
         ocr_text: finalOcrText,
         score: pdfEval.score,
+        max_score: pdfEval.maxScore,
         feedback: pdfEval.feedback,
         socratic_hint: pdfEval.socraticHint,
+        evaluation_provider: pdfEval.evaluationProvider,
+        evaluation_status: pdfEval.evaluationStatus,
+        fallback_reason: pdfEval.fallbackReason || null,
         ai_evaluation_json: JSON.stringify(aiEvalData),
-        status: 'pending_review',
+        status: pdfEval.evaluationStatus === 'manual_review' ? 'manual_review' : 'pending_review',
         submitted_at: submittedAt
       };
 

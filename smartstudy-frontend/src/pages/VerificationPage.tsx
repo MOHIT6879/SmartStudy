@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../config/api';
 
+const isPdfUrl = (url?: string) => Boolean(url && (/\.pdf(\?|#|$)/i.test(url) || url.startsWith('data:application/pdf') || url.includes('/pdf')));
+
 export default function VerificationPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -133,9 +135,15 @@ export default function VerificationPage() {
           >
             ✕
           </button>
-          {activeImageUrl ? <img src={activeImageUrl} alt="Student Full Paper" style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: '0.5rem', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)' }} /> : <p style={{ color: 'white' }}>No scan image available.</p>}
+          {activeImageUrl ? (
+            isPdfUrl(activeImageUrl) ? (
+              <iframe src={`${activeImageUrl}#toolbar=0&view=FitH`} style={{ width: '90vw', height: '85vh', borderRadius: '0.5rem' }} title="Student Full Paper PDF" />
+            ) : (
+              <img src={activeImageUrl} alt="Student Full Paper" style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: '0.5rem', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)' }} />
+            )
+          ) : <p style={{ color: 'white' }}>No scan document available.</p>}
           <p style={{ color: 'white', marginTop: '1rem', fontSize: '0.9rem' }}>
-            Page {activePageIndex + 1} of {imageList.length} • Click anywhere to close
+            Click anywhere to close
           </p>
         </div>
       )}
@@ -181,11 +189,11 @@ export default function VerificationPage() {
               onClick={() => setIsZoomOpen(true)}
               style={{ fontSize: '0.8rem', background: '#EEF2FF', color: '#4F46E5', border: '1px solid #C7D2FE', padding: '0.3rem 0.75rem', borderRadius: '0.375rem', cursor: 'pointer', fontWeight: 600 }}
             >
-              🔍 Pop-out Full Photo Zoom
+              🔍 Pop-out Full Document Zoom
             </button>
           </div>
 
-          {/* Large High-Res Image Display Container */}
+          {/* Large High-Res Image / PDF Display Container */}
           <div 
             style={{
               width: '100%',
@@ -196,30 +204,36 @@ export default function VerificationPage() {
               border: '1px solid #CBD5E1',
               position: 'relative',
               background: '#0F172A',
-              cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center'
             }}
-            onClick={() => setIsZoomOpen(true)}
           >
-            {activeImageUrl ? <img src={activeImageUrl} alt="Student Paper Copy" style={{ maxWidth: '100%', maxHeight: '650px', objectFit: 'contain' }} /> : <p style={{ color: '#CBD5E1' }}>No scan image available.</p>}
-            <div style={{
-              position: 'absolute',
-              bottom: 12,
-              left: 12,
-              background: 'rgba(0, 0, 0, 0.8)',
-              color: 'white',
-              padding: '0.35rem 0.75rem',
-              borderRadius: '0.375rem',
-              fontSize: '0.75rem'
-            }}>
-              Detected Script: {langCode} Multilingual Engine • Page {activePageIndex + 1} of {imageList.length}
-            </div>
+            {activeImageUrl ? (
+              isPdfUrl(activeImageUrl) ? (
+                <iframe src={`${activeImageUrl}#toolbar=0&view=FitH`} style={{ width: '100%', height: '600px', border: 'none' }} title="Student Paper Copy PDF" />
+              ) : (
+                <img src={activeImageUrl} alt="Student Paper Copy" style={{ maxWidth: '100%', maxHeight: '650px', objectFit: 'contain', cursor: 'pointer' }} onClick={() => setIsZoomOpen(true)} />
+              )
+            ) : <p style={{ color: '#CBD5E1' }}>No scan document available.</p>}
+            {!isPdfUrl(activeImageUrl) && (
+              <div style={{
+                position: 'absolute',
+                bottom: 12,
+                left: 12,
+                background: 'rgba(0, 0, 0, 0.8)',
+                color: 'white',
+                padding: '0.35rem 0.75rem',
+                borderRadius: '0.375rem',
+                fontSize: '0.75rem'
+              }}>
+                Detected Script: {langCode} Multilingual Engine • Page {activePageIndex + 1} of {imageList.length}
+              </div>
+            )}
           </div>
 
           {/* Multi-Page Selector Buttons */}
-          {imageList.length > 1 && (
+          {imageList.length > 1 && !isPdfUrl(imageList[0]) && (
             <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem', justifyContent: 'center' }}>
               {imageList.map((_, idx) => (
                 <button

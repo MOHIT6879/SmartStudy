@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { 
   Upload, 
   Sparkles,
@@ -9,37 +9,60 @@ import {
   X
 } from 'lucide-react';
 import AgentPipelineStatus from '../components/AgentPipelineStatus';
-import BulkEvaluationModal from '../components/BulkEvaluationModal';
 import { API_BASE_URL } from '../config/api';
 
-export default function ScanGrade() {
+export default function ScanGrade({
+  lockAssignmentId,
+  onBatchComplete
+}: { lockAssignmentId?: string; onBatchComplete?: () => void } = {}) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const classSubjectId = searchParams.get('classSubjectId') || '';
 
   // Form State
   const [studentName, setStudentName] = useState('');
-  const [subject, setSubject] = useState('Physics');
-  const [assessmentTitle, setAssessmentTitle] = useState('');
-  const [assessmentType, setAssessmentType] = useState('Class Test');
+  const [subject, setSubject] = useState(searchParams.get('subject') || '');
   const [markingScheme, setMarkingScheme] = useState('');
-  const selectedLanguage = 'English';
+  const [markingSchemeFromPaper, setMarkingSchemeFromPaper] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState('English');
   const [files, setFiles] = useState<File[]>([]);
   const [assignmentId, setAssignmentId] = useState('');
-  const [assignments, setAssignments] = useState<Array<{ id: string; title: string; className: string }>>([]);
+  const [assignments, setAssignments] = useState<Array<{ id: string; title: string; className: string; subject?: string; language?: string; answerKeyText?: string }>>([]);
 
   // Async Execution States
   const [isGrading, setIsGrading] = useState(false);
   const [pipelineStep, setPipelineStep] = useState<number>(1);
   const [pipelineLog, setPipelineLog] = useState<string>('Ready for input scan');
-  const [isBulkOpen, setIsBulkOpen] = useState(false);
+
+  // Bulk mode: same form, but accepts many scripts at once and grades them as one batch job
+  const [isBulkMode, setIsBulkMode] = useState(false);
+  const [bulkJobId, setBulkJobId] = useState<string | null>(null);
+  const [batchJob, setBatchJob] = useState<any>(null);
 
   useEffect(() => {
     let isMounted = true;
 
-    fetch(`${API_BASE_URL}/api/assignments`)
+    const url = classSubjectId
+      ? `${API_BASE_URL}/api/assignments?classSubjectId=${encodeURIComponent(classSubjectId)}`
+      : `${API_BASE_URL}/api/assignments`;
+
+    fetch(url)
       .then((res) => res.json())
       .then((data) => {
         if (isMounted && data.success && Array.isArray(data.assignments)) {
           setAssignments(data.assignments);
+          if (lockAssignmentId) {
+            const locked = data.assignments.find((item: any) => item.id === lockAssignmentId);
+            if (locked) {
+              setAssignmentId(locked.id);
+              setSelectedLanguage(locked.language || 'English');
+              if (locked.subject || locked.className) setSubject(locked.subject || locked.className);
+              if (locked.answerKeyText) {
+                setMarkingScheme(locked.answerKeyText);
+                setMarkingSchemeFromPaper(true);
+              }
+            }
+          }
         }
       })
       .catch(() => {
@@ -49,7 +72,7 @@ export default function ScanGrade() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [classSubjectId, lockAssignmentId]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -57,9 +80,77 @@ export default function ScanGrade() {
     }
   };
 
+  // Poll batch job status while a bulk grading job is running
+  useEffect(() => {
+    if (!bulkJobId) return;
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/submissions/batch/${bulkJobId}`);
+        const data = await res.json();
+        if (data.success) {
+          setBatchJob(data);
+          if (data.status === 'completed' || data.status === 'failed') {
+            setIsGrading(false);
+          }
+        }
+      } catch (err) {
+        console.error('Batch status polling error:', err);
+      }
+    };
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 2000);
+    return () => clearInterval(interval);
+  }, [bulkJobId]);
+
+  // Once the whole batch (every student paper, not just the first) is graded, hand off to the caller
+  // so the teacher lands straight on the results instead of staring at a finished progress bar.
+  useEffect(() => {
+    if (batchJob?.status !== 'completed' || !onBatchComplete) return;
+    const timer = setTimeout(() => onBatchComplete(), 1200);
+    return () => clearTimeout(timer);
+  }, [batchJob?.status, onBatchComplete]);
+
   const handleRunGrading = async () => {
     if (files.length === 0) {
       alert('⚠️ Please attach at least 1 handwritten script image or PDF scan.');
+      return;
+    }
+    if (!assignmentId) {
+      alert('Select the dispatched assignment that matches this answer sheet.');
+      return;
+    }
+
+    const selectedAssignment = assignments.find((item) => item.id === assignmentId);
+
+    if (isBulkMode) {
+      setIsGrading(true);
+      setBulkJobId(null);
+      setBatchJob(null);
+      try {
+        const formData = new FormData();
+        files.forEach((f) => formData.append('submissions', f));
+        formData.append('assignmentId', assignmentId);
+        formData.append('selectedLanguage', selectedLanguage);
+        formData.append('className', selectedAssignment?.className || subject);
+        formData.append('subject', subject);
+        formData.append('markingScheme', markingScheme);
+
+        const res = await fetch(`${API_BASE_URL}/api/submissions/bulk`, {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+        if (data.success && data.jobId) {
+          setBulkJobId(data.jobId);
+        } else {
+          alert(data.message || 'Failed to start bulk batch job.');
+          setIsGrading(false);
+        }
+      } catch (err: any) {
+        console.error(err);
+        alert('Error connecting to grading backend.');
+        setIsGrading(false);
+      }
       return;
     }
 
@@ -93,10 +184,10 @@ export default function ScanGrade() {
       files.forEach((f) => formData.append('submission', f));
       formData.append('studentName', studentName || 'Student ' + Math.floor(Math.random() * 100));
       formData.append('subject', subject);
-      formData.append('className', `Grade 11 ${subject}`);
+      formData.append('className', selectedAssignment?.className || subject);
       formData.append('selectedLanguage', selectedLanguage);
       formData.append('markingScheme', markingScheme);
-      if (assignmentId) formData.append('assignmentId', assignmentId);
+      formData.append('assignmentId', assignmentId);
 
       const res = await fetch(`${API_BASE_URL}/api/submissions`, {
         method: 'POST',
@@ -140,10 +231,20 @@ export default function ScanGrade() {
           <p>Upload a handwritten script — the agents transcribe, verify and mark it against your knowledge base</p>
         </div>
         <div className="page-top-bar-actions">
-          <button className="btn btn-secondary" onClick={() => setIsBulkOpen(true)}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8125rem', fontWeight: 600, color: '#334155', cursor: 'pointer', padding: '0.5rem 0.75rem', border: '1px solid #E2E8F0', borderRadius: '0.5rem', background: isBulkMode ? '#EFF6FF' : 'white' }}>
+            <input
+              type="checkbox"
+              checked={isBulkMode}
+              onChange={(e) => {
+                setIsBulkMode(e.target.checked);
+                setFiles([]);
+                setBulkJobId(null);
+                setBatchJob(null);
+              }}
+            />
             <Layers className="size-4" />
-            <span>Bulk Stack (50-100)</span>
-          </button>
+            <span>Bulk upload (multiple scripts)</span>
+          </label>
         </div>
       </header>
 
@@ -177,7 +278,9 @@ export default function ScanGrade() {
                   Click to attach a scan
                 </p>
                 <p style={{ fontSize: '0.8125rem', color: '#64748B', margin: '0.25rem 0 0 0' }}>
-                  JPG, PNG, WEBP or PDF · max ~8MB
+                  {isBulkMode
+                    ? "Select every student's scan for this assignment \u2014 one file per student, graded as a batch"
+                    : 'JPG, PNG, WEBP or PDF \u00b7 long PDFs are processed in ordered 10-page batches'}
                 </p>
               </div>
             </div>
@@ -206,75 +309,74 @@ export default function ScanGrade() {
               </div>
             )}
 
+            {/* Dispatched assignment: primary match key linking this scan to an exam */}
+            <div className="form-group" style={{ marginTop: '1.25rem' }}>
+              <label className="form-label">Dispatched assignment <span style={{ color: '#DC2626' }}>*</span></label>
+              <select
+                className="form-select"
+                value={assignmentId}
+                disabled={Boolean(lockAssignmentId)}
+                style={lockAssignmentId ? { background: '#F8FAFC', color: '#475569', cursor: 'not-allowed' } : undefined}
+                onChange={(e) => {
+                  setAssignmentId(e.target.value);
+                  const assignment = assignments.find((item) => item.id === e.target.value);
+                  setSelectedLanguage(assignment?.language || 'English');
+                  if (assignment?.subject || assignment?.className) setSubject(assignment.subject || assignment.className);
+                  if (assignment?.answerKeyText) {
+                    setMarkingScheme(assignment.answerKeyText);
+                    setMarkingSchemeFromPaper(true);
+                  } else {
+                    setMarkingSchemeFromPaper(false);
+                  }
+                }}
+              >
+                <option value="" disabled>Select the matching assignment</option>
+                {assignments.map((assignment) => (
+                  <option key={assignment.id} value={assignment.id}>
+                    {assignment.title} · {assignment.subject || assignment.className}
+                  </option>
+                ))}
+              </select>
+              <p style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.2rem' }}>
+                {lockAssignmentId
+                  ? 'Locked to this paper — scans uploaded here are always matched against it.'
+                  : 'This is how the uploaded script is matched to an exam — required before grading.'}
+              </p>
+            </div>
+
             {/* Form Fields Grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1.25rem' }}>
-              <div className="form-group">
-                <label className="form-label">Student name</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  placeholder="e.g. Emma Watson"
-                  value={studentName}
-                  onChange={(e) => setStudentName(e.target.value)}
-                />
-              </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1rem' }}>
+              {!isBulkMode && (
+                <div className="form-group">
+                  <label className="form-label">Student name</label>
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    placeholder="e.g. Emma Watson"
+                    value={studentName}
+                    onChange={(e) => setStudentName(e.target.value)}
+                  />
+                </div>
+              )}
 
-              <div className="form-group">
+              <div className="form-group" style={isBulkMode ? { gridColumn: '1 / -1' } : undefined}>
                 <label className="form-label">Subject</label>
-                <select 
-                  className="form-select"
+                <input
+                  type="text"
+                  className="form-input"
                   value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                >
-                  <option value="Physics">Physics</option>
-                  <option value="Psychology">Psychology</option>
-                  <option value="Mathematics">Mathematics</option>
-                  <option value="General Science">General Science</option>
-                  <option value="English Literature">English Literature</option>
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Assessment title</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  placeholder="e.g. Physics Test 4"
-                  value={assessmentTitle}
-                  onChange={(e) => setAssessmentTitle(e.target.value)}
+                  placeholder="Set by the selected assignment"
+                  readOnly
+                  style={{ background: '#F8FAFC', color: '#475569', cursor: 'not-allowed' }}
                 />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Assessment type</label>
-                <select 
-                  className="form-select"
-                  value={assessmentType}
-                  onChange={(e) => setAssessmentType(e.target.value)}
-                >
-                  <option value="Class Test">Class Test</option>
-                  <option value="Homework">Homework</option>
-                  <option value="Mid-term">Mid-term</option>
-                  <option value="Final Exam">Final Exam</option>
-                </select>
-              </div>
-
-              <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                <label className="form-label">Dispatched assignment (optional)</label>
-                <select
-                  className="form-select"
-                  value={assignmentId}
-                  onChange={(e) => setAssignmentId(e.target.value)}
-                >
-                  <option value="">Grade from subject knowledge base</option>
-                  {assignments.map((assignment) => (
-                    <option key={assignment.id} value={assignment.id}>
-                      {assignment.title} · {assignment.className}
-                    </option>
-                  ))}
-                </select>
               </div>
             </div>
+
+            {isBulkMode && (
+              <p style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.5rem' }}>
+                Bulk mode: attach one scan per student — each student's name is transcribed individually from their script.
+              </p>
+            )}
 
             {/* Marking Scheme */}
             <div className="form-group" style={{ marginTop: '1rem' }}>
@@ -284,10 +386,15 @@ export default function ScanGrade() {
                 rows={3}
                 placeholder={`1. F = ma (2 marks)\n2. a = 5 m/s², s = 80 m (5 marks)`}
                 value={markingScheme}
-                onChange={(e) => setMarkingScheme(e.target.value)}
+                onChange={(e) => {
+                  setMarkingScheme(e.target.value);
+                  setMarkingSchemeFromPaper(false);
+                }}
               />
               <p style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.2rem' }}>
-                Leave blank to grade purely from the subject knowledge base.
+                {markingSchemeFromPaper
+                  ? 'Loaded from the deployed question paper\'s answer key. Edit here to override just this batch.'
+                  : 'Leave blank to grade purely from the subject knowledge base.'}
               </p>
             </div>
 
@@ -303,40 +410,70 @@ export default function ScanGrade() {
                 {isGrading ? (
                   <>
                     <Clock className="size-4 animate-spin" />
-                    <span>Running multi-agent pipeline...</span>
+                    <span>{isBulkMode ? 'Running batch grading...' : 'Running multi-agent pipeline...'}</span>
                   </>
                 ) : (
                   <>
                     <Sparkles className="size-4" />
-                    <span>Run grading pipeline</span>
+                    <span>{isBulkMode ? `Run batch grading (${files.length})` : 'Run grading pipeline'}</span>
                   </>
                 )}
               </button>
             </div>
           </div>
 
-          {/* Right Column: Agent Pipeline Execution Box */}
+          {/* Right Column: Agent Pipeline Execution Box, or batch progress while bulk mode is running */}
           <div>
-            <AgentPipelineStatus 
-              currentStep={isGrading ? pipelineStep : 1}
-              subData={{
-                imageName: files.length > 0 ? files[0].name : undefined,
-                blocksTranscribed: files.length,
-                subject,
-                qaNote: isGrading ? pipelineLog : 'Ready for grading execution',
-                status: isGrading ? 'processing' : 'ready'
-              }}
-            />
+            {isBulkMode && bulkJobId ? (
+              <div className="m-card">
+                <div className="m-card-header">
+                  <h3 className="m-card-title">Batch progress</h3>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                  <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#334155' }}>
+                    {batchJob?.processed || 0} / {batchJob?.total || files.length} graded
+                  </span>
+                  <span className={`badge ${batchJob?.status === 'completed' ? 'badge-green' : 'badge-blue'}`}>
+                    {batchJob?.status === 'completed' ? '● Completed' : '● Processing'}
+                  </span>
+                </div>
+                <div style={{ width: '100%', height: '8px', background: '#E2E8F0', borderRadius: '9999px', overflow: 'hidden', marginBottom: '0.5rem' }}>
+                  <div
+                    style={{
+                      width: `${batchJob?.progressPercent || 0}%`,
+                      height: '100%',
+                      background: '#2563EB',
+                      borderRadius: '9999px',
+                      transition: 'width 0.4s ease'
+                    }}
+                  />
+                </div>
+                <div style={{ fontSize: '0.75rem', color: '#64748B' }}>
+                  Progress: {batchJob?.progressPercent || 0}% · Successful: {batchJob?.successful || 0}
+                </div>
+                {batchJob?.status === 'completed' && (
+                  <button className="btn btn-success" style={{ width: '100%', marginTop: '1rem' }} onClick={() => navigate('/submissions')}>
+                    <span>Finished! View in queue</span>
+                  </button>
+                )}
+              </div>
+            ) : (
+              <AgentPipelineStatus 
+                currentStep={isGrading ? pipelineStep : 1}
+                subData={{
+                  imageName: files.length > 0 ? files[0].name : undefined,
+                  blocksTranscribed: files.length,
+                  subject,
+                  qaNote: isGrading ? pipelineLog : 'Ready for grading execution',
+                  status: isGrading ? 'processing' : 'ready'
+                }}
+              />
+            )}
           </div>
 
         </div>
       </div>
-
-      <BulkEvaluationModal 
-        isOpen={isBulkOpen}
-        onClose={() => setIsBulkOpen(false)}
-        onRefreshDashboard={() => navigate('/submissions')}
-      />
     </div>
   );
 }
+

@@ -1,17 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { Layers, Upload, X, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
+import LanguageSelect from './LanguageSelect';
 
 interface BulkEvaluationModalProps {
   isOpen: boolean;
+  assignmentId?: string;
   onClose: () => void;
   onRefreshDashboard: () => void;
 }
 
-export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboard }: BulkEvaluationModalProps) {
+export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose, onRefreshDashboard }: BulkEvaluationModalProps) {
   const [className, setClassName] = useState('Grade 11');
   const [selectedLanguage, setSelectedLanguage] = useState('English');
   const [assignmentTitle, setAssignmentTitle] = useState('');
+  const [markingScheme, setMarkingScheme] = useState('');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -58,6 +61,10 @@ export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboar
       setErrorMsg('Please select at least 1 student answer sheet image to evaluate.');
       return;
     }
+    if (!assignmentId) {
+      setErrorMsg('Select the dispatched assignment in Scan & Grade before starting bulk evaluation.');
+      return;
+    }
 
     setIsSubmitting(true);
     setErrorMsg(null);
@@ -69,9 +76,11 @@ export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboar
       selectedFiles.forEach((file) => {
         formData.append('submissions', file);
       });
+      formData.append('assignmentId', assignmentId);
       formData.append('selectedLanguage', selectedLanguage);
       formData.append('className', className);
       formData.append('subject', assignmentTitle);
+      formData.append('markingScheme', markingScheme);
 
       const res = await fetch(`${API_BASE_URL}/api/submissions/bulk`, {
         method: 'POST',
@@ -146,15 +155,7 @@ export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboar
 
               <div className="form-group">
                 <label className="form-label">Evaluation Language</label>
-                <select
-                  className="form-select"
-                  value={selectedLanguage}
-                  onChange={(e) => setSelectedLanguage(e.target.value)}
-                >
-                  <option value="English">English</option>
-                  <option value="Telugu (తెలుగు)">Telugu (తెలుగు)</option>
-                  <option value="Hindi (हिंदी)">Hindi (हिंदी)</option>
-                </select>
+                <LanguageSelect value={selectedLanguage} onChange={setSelectedLanguage} />
               </div>
             </div>
 
@@ -167,6 +168,20 @@ export default function BulkEvaluationModal({ isOpen, onClose, onRefreshDashboar
                 onChange={(e) => setAssignmentTitle(e.target.value)}
                 placeholder="e.g. Physics Mid-term"
               />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Answer key / marking scheme (optional)</label>
+              <textarea
+                className="form-input"
+                rows={4}
+                value={markingScheme}
+                onChange={(e) => setMarkingScheme(e.target.value)}
+                placeholder="1. F = ma (2 marks)\n2. a = 5 m/s\u00b2, s = 80 m (5 marks)"
+              />
+              <p style={{ fontSize: '0.75rem', color: '#64748B', margin: '0.35rem 0 0 0' }}>
+                Applies to every sheet in this batch and takes priority over the assignment's stored benchmark key when they disagree.
+              </p>
             </div>
 
             {/* Drop Zone */}
