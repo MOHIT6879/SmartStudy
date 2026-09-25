@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
+    "send-whatsapp": "tsx src/scripts/sendRealWhatsapp.ts",
     "build": "tsc",
     "provider-eval": "tsx ../provider-evaluation/src/runner.ts"
   },
@@ -21,6 +22,7 @@
     "@types/multer": "^2.2.0",
     "@types/node": "^26.2.0",
     "@types/pdf-parse": "^1.1.5",
+    "@types/qrcode-terminal": "^0.12.2",
     "chromadb": "^3.5.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
@@ -36,8 +38,11 @@
   "dependencies": {
     "@napi-rs/canvas": "^1.0.9",
     "@supabase/supabase-js": "^2.112.3",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
     "adm-zip": "^0.6.0",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^6.3.289"
+    "pdfjs-dist": "^6.3.289",
+    "qrcode-terminal": "^0.12.0",
+    "twilio": "^6.1.1"
   }
 }

@@ -100,6 +100,26 @@ alter table public.submissions add column if not exists evaluation_status text;
 alter table public.submissions add column if not exists fallback_reason text;
 alter table public.submissions add column if not exists final_evaluation_json jsonb;
 
+create table if not exists public.parents (
+  id text primary key default gen_random_uuid()::text,
+  name text not null,
+  phone_number text not null unique,
+  email text,
+  preferred_channel text default 'whatsapp',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.students (
+  id text primary key default gen_random_uuid()::text,
+  name text not null,
+  roll_number text,
+  class_id text references public.classes(id) on delete set null,
+  parent_id text references public.parents(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.submissions add column if not exists student_id text references public.students(id) on delete set null;
+
 create table if not exists public.notifications (
   id text primary key,
   type text not null,
@@ -107,7 +127,11 @@ create table if not exists public.notifications (
   message text not null,
   details_json jsonb,
   timestamp timestamptz not null default now(),
-  student_name text
+  student_name text,
+  student_id text references public.students(id) on delete set null,
+  parent_phone text,
+  delivery_status text default 'pending',
+  provider_message_id text
 );
 
 create table if not exists public.textbook_embeddings (

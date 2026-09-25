@@ -4,6 +4,8 @@ import { API_BASE_URL } from '../config/api';
 export default function ParentPortal() {
   const [notifications, setNotifications] = useState<any[]>([]);
 
+  const [sendingTest, setSendingTest] = useState(false);
+
   useEffect(() => {
     fetchNotifications();
     const interval = setInterval(fetchNotifications, 4000);
@@ -22,6 +24,28 @@ export default function ParentPortal() {
     }
   };
 
+  const handleSendTestNotification = async () => {
+    setSendingTest(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/notifications/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentName: 'Student',
+          message: 'Teacher reviewed & approved answer sheet evaluation.'
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchNotifications();
+      }
+    } catch (err) {
+      console.error('Test notification error:', err);
+    } finally {
+      setSendingTest(false);
+    }
+  };
+
   return (
     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
       
@@ -29,10 +53,18 @@ export default function ParentPortal() {
       <header className="page-top-bar no-print">
         <div className="page-top-bar-text">
           <h1>Parent WhatsApp alerts</h1>
-          <p>Real-time WhatsApp digest simulation dispatched to parents upon teacher grade verification</p>
+          <p>Real-time WhatsApp digest dispatched to registered parent phone numbers</p>
         </div>
-        <div className="page-top-bar-actions">
-          <span className="badge badge-green">● WhatsApp Business API Verified</span>
+        <div className="page-top-bar-actions" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <button 
+            className="btn btn-sm btn-primary"
+            onClick={handleSendTestNotification}
+            disabled={sendingTest}
+            style={{ fontSize: '0.8125rem', padding: '0.35rem 0.75rem', background: '#059669', color: 'white', border: 'none', borderRadius: '0.375rem', cursor: 'pointer' }}
+          >
+            {sendingTest ? 'Sending...' : '📲 Send Test Alert'}
+          </button>
+          <span className="badge badge-green">● WhatsApp Dispatch Active</span>
         </div>
       </header>
 

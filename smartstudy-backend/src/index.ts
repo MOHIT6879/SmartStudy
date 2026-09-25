@@ -10,6 +10,7 @@ import { extractQuestionsFromImage, determineReasoningModel, attachStimulusImage
 import { expandPdfFilesToImages } from './services/pdfRasterService.js';
 import { uploadDisk, uploadsDir } from './middleware/upload.js';
 import { createBatchJob, getBatchJob } from './services/batchService.js';
+import { sendAndLogParentNotification } from './services/notificationService.js';
 
 dotenv.config();
 
@@ -43,7 +44,7 @@ const isSupabaseConfigured = () => {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    message: 'SmartStudy Backend Active (Google Gemini 3.6 Engine)',
+    message: 'PAATAM.AI Backend Active (Google Gemini 3.6 Engine)',
     primaryProvider: process.env.PRIMARY_AI_PROVIDER || 'gemini',
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
     geminiModel: getConfiguredGeminiModel(),
@@ -331,16 +332,38 @@ app.post('/api/assignments', async (req, res) => {
         if (retryErr) console.error('❌ Supabase DB Insert Fallback Error:', retryErr.message);
       }
 
-      await supabase.from('notifications').insert([{
-        id: 'notif-' + Date.now(),
-        type: 'assignment_dispatched',
-        title: '📲 WhatsApp Alert: New Class Assignment',
-        message: `New assignment "${titleVal}" has been assigned for ${classVal}. Please check the Student Portal.`,
-        details_json: JSON.stringify({ title: titleVal, className: classVal }),
-        timestamp: createdAt,
-        student_name: 'Aarav & Alex'
-      }]);
-      console.log(`   └─ WhatsApp notification inserted in Supabase`);
+      let targetStudents: any[] = [];
+      if (classId) {
+        const { data: stData } = await supabase.from('students').select('id, name').eq('class_id', classId);
+        if (stData && stData.length > 0) targetStudents = stData;
+      }
+      if (targetStudents.length === 0) {
+        const { data: stData } = await supabase.from('students').select('id, name').limit(10);
+        if (stData && stData.length > 0) targetStudents = stData;
+      }
+
+      if (targetStudents.length > 0) {
+        for (const st of targetStudents) {
+          await sendAndLogParentNotification({
+            supabase,
+            type: 'assignment_dispatched',
+            title: '📲 WhatsApp Alert: New Class Assignment',
+            message: `New assignment "${titleVal}" has been assigned for ${classVal}. Please check the Student Portal.`,
+            details_json: { title: titleVal, className: classVal },
+            studentId: st.id,
+            studentName: st.name
+          });
+        }
+      } else {
+        await sendAndLogParentNotification({
+          supabase,
+          type: 'assignment_dispatched',
+          title: '📲 WhatsApp Alert: New Class Assignment',
+          message: `New assignment "${titleVal}" has been assigned for ${classVal}. Please check the Student Portal.`,
+          details_json: { title: titleVal, className: classVal }
+        });
+      }
+      console.log(`   └─ Parent WhatsApp notification dispatched for class ${classVal}`);
     }
 
     console.log(`✅ [ASSIGNMENT DISPATCHED] ID: ${id} ready for student answer uploads.`);
@@ -972,25 +995,118 @@ app.post('/api/submissions/:id/approve', async (req, res) => {
         final_evaluation_json: Array.isArray(questionEvaluations) ? questionEvaluations : null
       }).eq('id', id);
 
-      const { data: subData } = await supabase.from('submissions').select('student_name, max_score').eq('id', id).single();
+      const { data: subData } = await supabase.from('submissions').select('student_name, student_id, max_score').eq('id', id).single();
       const subMaxScore = subData?.max_score || 40;
 
-      await supabase.from('notifications').insert([{
-        id: 'notif-' + Date.now(),
+      await sendAndLogParentNotification({
+        supabase,
         type: 'evaluation_ready',
         title: '📲 WhatsApp Digest: Teacher Graded Paper',
         message: `Teacher reviewed & approved score ${score}/${subMaxScore} marks for ${subData?.student_name || 'Student'}.`,
-        details_json: JSON.stringify({ score, maxScore: subMaxScore, feedback, socraticHint }),
-        timestamp: new Date().toISOString(),
-        student_name: subData?.student_name
-      }]);
-      console.log(`   └─ Status updated to 'approved' & WhatsApp notification sent for ${subData?.student_name || 'Student'}`);
+        details_json: { score, maxScore: subMaxScore, feedback, socraticHint },
+        studentName: subData?.student_name,
+        studentId: subData?.student_id
+      });
+      console.log(`   └─ Status updated to 'approved' & Parent WhatsApp notification dispatched for ${subData?.student_name || 'Student'}`);
     }
 
     console.log(`✅ [SUBMISSION APPROVED] ID: "${id}"`);
     res.json({ success: true, submission: { id, status: 'approved', finalScore: score, finalFeedback: feedback, finalHint: socraticHint } });
   } catch (err: any) {
     console.error('❌ Approve Error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 8b. Parents & Students Directory Endpoints
+app.get('/api/parents', async (req, res) => {
+  try {
+    if (isSupabaseConfigured()) {
+      const { data, error } = await supabase.from('parents').select('*').order('name', { ascending: true });
+      if (!error && data) return res.json({ success: true, parents: data });
+    }
+    res.json({ success: true, parents: [] });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/parents', async (req, res) => {
+  try {
+    const { name, phoneNumber, email, preferredChannel } = req.body;
+    if (!name || !phoneNumber) return res.status(400).json({ success: false, message: 'Name and phoneNumber are required' });
+
+    if (isSupabaseConfigured()) {
+      const parentRecord = {
+        name,
+        phone_number: phoneNumber,
+        email: email || null,
+        preferred_channel: preferredChannel || 'whatsapp'
+      };
+      const { data, error } = await supabase.from('parents').insert([parentRecord]).select().single();
+      if (error) throw error;
+      return res.json({ success: true, parent: data });
+    }
+    res.status(400).json({ success: false, message: 'Supabase not configured' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.get('/api/students', async (req, res) => {
+  try {
+    if (isSupabaseConfigured()) {
+      const { data, error } = await supabase.from('students').select('*, parents(*)').order('name', { ascending: true });
+      if (!error && data) return res.json({ success: true, students: data });
+    }
+    res.json({ success: true, students: [] });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/students', async (req, res) => {
+  try {
+    const { name, rollNumber, classId, parentId } = req.body;
+    if (!name) return res.status(400).json({ success: false, message: 'Student name is required' });
+
+    if (isSupabaseConfigured()) {
+      const studentRecord = {
+        name,
+        roll_number: rollNumber || null,
+        class_id: classId || null,
+        parent_id: parentId || null
+      };
+      const { data, error } = await supabase.from('students').insert([studentRecord]).select('*, parents(*)').single();
+      if (error) throw error;
+      return res.json({ success: true, student: data });
+    }
+    res.status(400).json({ success: false, message: 'Supabase not configured' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/notifications/test', async (req, res) => {
+  try {
+    const { phone, studentName, message } = req.body;
+    const targetPhone = phone || null;
+    const targetStudent = studentName || 'Student';
+    const notifMessage = message || `Teacher reviewed & approved the evaluated answer sheet for ${targetStudent}.`;
+
+    const result = await sendAndLogParentNotification({
+      supabase,
+      type: 'evaluation_ready',
+      title: '📲 WhatsApp Digest: Teacher Graded Paper',
+      message: notifMessage,
+      details_json: { score: 40, maxScore: 50, feedback: 'Verified & approved by teacher.' },
+      studentName: targetStudent,
+      overridePhone: targetPhone
+    });
+
+    res.json({ success: true, result });
+  } catch (err: any) {
+    console.error('Test notification error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -1008,7 +1124,11 @@ app.get('/api/notifications', async (req, res) => {
           message: r.message,
           details: r.details_json ? (typeof r.details_json === 'string' ? JSON.parse(r.details_json) : r.details_json) : null,
           timestamp: r.timestamp,
-          studentName: r.student_name
+          studentName: r.student_name,
+          studentId: r.student_id,
+          parentPhone: r.parent_phone,
+          deliveryStatus: r.delivery_status || 'simulated',
+          providerMessageId: r.provider_message_id
         }));
         return res.json({ success: true, notifications });
       }
@@ -1022,6 +1142,6 @@ app.get('/api/notifications', async (req, res) => {
 
 // Start Server
 app.listen(port, () => {
-  console.log(`🚀 SmartStudy Backend active at http://localhost:${port}`);
+  console.log(`🚀 PAATAM.AI Backend active at http://localhost:${port}`);
   console.log(`⚡ Supabase Cloud Engine: Active (100% Pure Cloud DB & Storage)`);
 });

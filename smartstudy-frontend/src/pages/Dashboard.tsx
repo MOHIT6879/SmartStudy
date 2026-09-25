@@ -289,7 +289,7 @@ export default function Dashboard() {
         <div className="banner-content">
           <span style={{ fontSize: '1.1rem' }}>⚡</span>
           <div>
-            <span className="banner-title">SmartStudy Engine Active:</span> Intelligent optical grading & RAG connected.
+            <span className="banner-title">PAATAM.AI Engine Active:</span> Intelligent optical grading & RAG connected.
           </div>
         </div>
         <button 

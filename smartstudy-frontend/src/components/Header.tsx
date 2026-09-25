@@ -46,9 +46,9 @@ export default function Header() {
       <div className="header-inner">
         {/* Brand Section */}
         <div className="brand-section">
-          <div className="brand-icon">S</div>
+          <div className="brand-icon">P</div>
           <div>
-            <div className="brand-title">SmartStudy <span style={{ fontSize: '0.7rem', opacity: 0.7, fontWeight: 500 }}>AI Grading Desk</span></div>
+            <div className="brand-title">PAATAM.AI <span style={{ fontSize: '0.7rem', opacity: 0.7, fontWeight: 500 }}>AI Grading Desk</span></div>
             <div className="brand-subtitle">Intelligent marking for handwritten tests, homework & exams</div>
           </div>
         </div>
