@@ -5,17 +5,13 @@ import {
   Clock, 
   TrendingUp, 
   Zap, 
-  ScanLine, 
-  ArrowRight,
-  Layers
+  ArrowRight
 } from 'lucide-react';
 import AgentPipelineStatus from '../components/AgentPipelineStatus';
-import BulkEvaluationModal from '../components/BulkEvaluationModal';
 import { API_BASE_URL } from '../config/api';
 
 export default function Overview() {
   const [submissions, setSubmissions] = useState<any[]>([]);
-  const [isBulkOpen, setIsBulkOpen] = useState(false);
 
   useEffect(() => {
     fetchSubmissions();
@@ -63,19 +59,6 @@ export default function Overview() {
         <div className="page-top-bar-text">
           <h1>Grading command centre</h1>
           <p>Multi-agent marking for handwritten tests, homework and exams</p>
-        </div>
-        <div className="page-top-bar-actions">
-          <button 
-            className="btn btn-secondary" 
-            onClick={() => setIsBulkOpen(true)}
-          >
-            <Layers className="size-4" />
-            <span>Bulk Stack (50-100)</span>
-          </button>
-          <Link to="/classes" className="btn btn-primary">
-            <ScanLine className="size-4" />
-            <span>Scan a script</span>
-          </Link>
         </div>
       </header>
 
@@ -269,12 +252,6 @@ export default function Overview() {
         </div>
 
       </div>
-
-      <BulkEvaluationModal 
-        isOpen={isBulkOpen}
-        onClose={() => setIsBulkOpen(false)}
-        onRefreshDashboard={fetchSubmissions}
-      />
     </div>
   );
 }

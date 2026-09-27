@@ -104,22 +104,29 @@ export default function ClassDetail() {
             </p>
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
+          <div className="entity-cards-grid">
             {subjects.map((s) => (
-              <div
+              <button
                 key={s.id}
-                className="submission-row-card"
-                style={{ cursor: 'pointer' }}
+                type="button"
+                className="entity-card entity-card-subject"
                 onClick={() => navigate(`/classes/${classId}/${s.id}`)}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                  <div style={{ width: '2.5rem', height: '2.5rem', borderRadius: '0.625rem', background: '#EFF6FF', display: 'grid', placeItems: 'center', color: '#2563EB' }}>
+                <div className="entity-card-head">
+                  <div className="entity-card-icon entity-card-icon-subject">
                     <BookOpen className="size-5" />
                   </div>
-                  <div style={{ fontWeight: 700, fontSize: '1rem', color: '#111827' }}>{s.subjectName}</div>
+                  <span className="entity-card-pill">Subject</span>
                 </div>
-                <ChevronRight className="size-4 text-slate-400" />
-              </div>
+
+                <h3 className="entity-card-title">{s.subjectName}</h3>
+                <p className="entity-card-subtitle">Deploy papers and scan scripts</p>
+
+                <div className="entity-card-footer">
+                  <span className="entity-card-action">Open Workspace</span>
+                  <ChevronRight className="size-4" />
+                </div>
+              </button>
             ))}
           </div>
         )}

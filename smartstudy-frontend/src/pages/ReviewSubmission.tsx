@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { 
-  ArrowLeft, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, 
-  FileText, Maximize2, Minus, Plus, RefreshCw, Sparkles, User, MessageSquare
+  ArrowLeft, AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronRight, 
+  FileText, Maximize2, Minus, Plus, RefreshCw, Sparkles, MessageSquare, User, XCircle
 } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { API_BASE_URL } from '../config/api';
@@ -16,10 +16,18 @@ type ReviewQuestion = {
 const marksOf = (question: any) => Number.isFinite(Number(question?.marks)) && Number(question.marks) >= 0 ? Number(question.marks) : 5;
 const isPdfUrl = (url?: string) => Boolean(url && (/\.pdf(\?|#|$)/i.test(url) || url.startsWith('data:application/pdf') || url.includes('/pdf')));
 const ZOOM_STEP = 0.1;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 3;
 const getPdfViewerSrc = (url: string, zoom: number) => {
   const pct = Math.round(zoom * 100);
   const zoomParam = pct === 100 ? 'page-width' : String(pct);
   return `${url}#toolbar=0&zoom=${zoomParam}`;
+};
+
+const getQuestionState = (scorePercent: number) => {
+  if (scorePercent >= 90) return 'correct';
+  if (scorePercent > 0) return 'partial';
+  return 'incorrect';
 };
 
 export default function ReviewSubmission() {
@@ -31,7 +39,6 @@ export default function ReviewSubmission() {
   const [hint, setHint] = useState('');
   const [answerKeyZoom, setAnswerKeyZoom] = useState(1);
   const [studentZoom, setStudentZoom] = useState(1);
-  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [approved, setApproved] = useState(false);
   const [questionFilter, setQuestionFilter] = useState<'All Questions' | 'Needs Review' | 'Full Credit'>('All Questions');
@@ -102,6 +109,18 @@ export default function ReviewSubmission() {
   const totalPercent = useMemo(() => totalMarks > 0 ? Math.round((totalEarned / totalMarks) * 100) : 0, [totalEarned, totalMarks]);
 
   const current = questions[selectedIndex];
+  const currentState = current ? getQuestionState(current.scorePercent) : 'incorrect';
+
+  const adjustZoom = (
+    setter: React.Dispatch<React.SetStateAction<number>>,
+    mode: 'in' | 'out' | 'reset'
+  ) => {
+    setter((z) => {
+      if (mode === 'reset') return 1;
+      const next = mode === 'in' ? z + ZOOM_STEP : z - ZOOM_STEP;
+      return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(next * 100) / 100));
+    });
+  };
 
   const updateCurrentMarks = (newMarks: number) => {
     if (!current) return;
@@ -195,20 +214,20 @@ export default function ReviewSubmission() {
         
         {/* Column 1: Answer Key PDF Column */}
         <div className="result-col-panel answer-key-panel">
-          <div className="panel-header">
+          <div className="panel-header toolbar-header">
             <h3 className="panel-title">
               <FileText size={16} className="title-icon text-indigo" />
               <span>Answer Key</span>
             </h3>
             <div className="panel-zoom-toolbar">
-              <button className="zoom-btn" title="Zoom Out" onClick={() => setAnswerKeyZoom((z) => Math.max(0.5, Math.round((z - ZOOM_STEP) * 100) / 100))}>
+              <button className="zoom-btn" title="Zoom Out" onClick={() => adjustZoom(setAnswerKeyZoom, 'out')} disabled={answerKeyZoom <= MIN_ZOOM}>
                 <Minus size={14} />
               </button>
               <span className="zoom-indicator">{Math.round(answerKeyZoom * 100)}%</span>
-              <button className="zoom-btn" title="Zoom In" onClick={() => setAnswerKeyZoom((z) => Math.min(3, Math.round((z + ZOOM_STEP) * 100) / 100))}>
+              <button className="zoom-btn" title="Zoom In" onClick={() => adjustZoom(setAnswerKeyZoom, 'in')} disabled={answerKeyZoom >= MAX_ZOOM}>
                 <Plus size={14} />
               </button>
-              <button className="zoom-btn" title="Reset Zoom" onClick={() => setAnswerKeyZoom(1)}>
+              <button className="zoom-btn" title="Reset Zoom" onClick={() => adjustZoom(setAnswerKeyZoom, 'reset')}>
                 <RefreshCw size={14} />
               </button>
               <button className="zoom-btn" title="Popout full view" onClick={() => window.open(answerKeyPdfUrl, '_blank')}>
@@ -224,21 +243,6 @@ export default function ReviewSubmission() {
               <iframe className="pdf-frame" src={getPdfViewerSrc(answerKeyPdfUrl, answerKeyZoom)} title="Answer Key PDF Preview" key={`${answerKeyPdfUrl}-${Math.round(answerKeyZoom * 100)}`} />
             )}
           </div>
-
-          {/* Answer Key Document Footer Metadata Card */}
-          <div className="answer-key-footer-card">
-            <h4 className="doc-heading">{paperTitle}</h4>
-            <p className="doc-subheading">Cambridge International (2026-27)</p>
-            <div className="doc-meta-pills">
-              <span className="pill"><FileText size={13} /> {questions.length} questions</span>
-              <span className="pill">🏆 {totalMarks} marks</span>
-              <span className="pill"><FileText size={13} /> Page 12</span>
-            </div>
-            <button className="btn-download-full" onClick={() => window.open(answerKeyPdfUrl, '_blank')}>
-              <Download size={15} />
-              <span>Download Answer Key</span>
-            </button>
-          </div>
         </div>
 
         {/* Column 2: Student Answer Sheet PDF Column */}
@@ -249,12 +253,15 @@ export default function ReviewSubmission() {
               <span>Student Answer Sheet</span>
             </h3>
             <div className="panel-zoom-toolbar">
-              <button className="zoom-btn" title="Zoom Out" onClick={() => setStudentZoom((z) => Math.max(0.5, Math.round((z - ZOOM_STEP) * 100) / 100))}>
+              <button className="zoom-btn" title="Zoom Out" onClick={() => adjustZoom(setStudentZoom, 'out')} disabled={studentZoom <= MIN_ZOOM}>
                 <Minus size={14} />
               </button>
               <span className="zoom-indicator">{Math.round(studentZoom * 100)}%</span>
-              <button className="zoom-btn" title="Zoom In" onClick={() => setStudentZoom((z) => Math.min(3, Math.round((z + ZOOM_STEP) * 100) / 100))}>
+              <button className="zoom-btn" title="Zoom In" onClick={() => adjustZoom(setStudentZoom, 'in')} disabled={studentZoom >= MAX_ZOOM}>
                 <Plus size={14} />
+              </button>
+              <button className="zoom-btn" title="Reset Zoom" onClick={() => adjustZoom(setStudentZoom, 'reset')}>
+                <RefreshCw size={14} />
               </button>
               <button className="zoom-btn" title="Popout PDF" onClick={() => window.open(studentPaperPdfUrl, '_blank')}>
                 <Maximize2 size={14} />
@@ -269,20 +276,6 @@ export default function ReviewSubmission() {
               title="Student Answer Sheet PDF" 
               key={`${studentPaperPdfUrl}-${Math.round(studentZoom * 100)}`}
             />
-
-            {/* Bottom PDF Navigation Control Bar Overlay */}
-            <div className="pdf-floating-control-bar">
-              <span className="page-count-badge">Page {page}/1</span>
-              <div className="floating-nav-buttons">
-                <button className="float-btn" onClick={() => setPage(1)}><ChevronLeft size={15} /></button>
-                <button className="float-btn" onClick={() => setPage(1)}><ChevronRight size={15} /></button>
-              </div>
-              <div className="floating-divider" />
-              <button className="float-btn" title="Zoom Out" onClick={() => setStudentZoom((z) => Math.max(0.5, Math.round((z - ZOOM_STEP) * 100) / 100))}><Minus size={14} /></button>
-              <button className="float-btn" title="Zoom In" onClick={() => setStudentZoom((z) => Math.min(3, Math.round((z + ZOOM_STEP) * 100) / 100))}><Plus size={14} /></button>
-              <button className="float-btn" title="Reset Zoom" onClick={() => setStudentZoom(1)}><RefreshCw size={14} /></button>
-              <button className="float-btn" title="Full Screen" onClick={() => window.open(studentPaperPdfUrl, '_blank')}><Maximize2 size={14} /></button>
-            </div>
           </div>
         </div>
 
@@ -301,8 +294,8 @@ export default function ReviewSubmission() {
             {current && (
               <div className="ai-eval-content">
                 <div className="ai-status-row">
-                  <div className={`status-badge-lg ${current.scorePercent >= 90 ? 'bg-success-light text-success' : current.scorePercent > 0 ? 'bg-warning-light text-warning' : 'bg-danger-light text-danger'}`}>
-                    <CheckCircle2 size={18} />
+                  <div className={`status-badge-lg ${currentState === 'correct' ? 'bg-success-light text-success' : currentState === 'partial' ? 'bg-warning-light text-warning' : 'bg-danger-light text-danger'}`}>
+                    {currentState === 'correct' ? <CheckCircle2 size={18} /> : currentState === 'partial' ? <AlertTriangle size={18} /> : <XCircle size={18} />}
                     <span>{current.status || (current.scorePercent >= 90 ? 'Correct!' : 'Incorrect')}</span>
                   </div>
                   
@@ -317,27 +310,27 @@ export default function ReviewSubmission() {
                   </div>
                 </div>
 
-                <p className="ai-explanation-text">
-                  {current.reasoning}
-                </p>
+                <div className="ai-review-highlight">
+                  <div className="ai-review-label">AI Review</div>
+                  <p className="ai-explanation-text ai-review-text">
+                    {current.reasoning}
+                  </p>
+                </div>
 
-                {/* Side-by-Side Expected vs Student Answer Boxes */}
-                <div className="comparison-side-by-side">
-                  <div className="compare-box expected-box">
-                    <div className="compare-box-label">
-                      <FileText size={14} className="text-emerald" />
-                      <span>Expected Answer</span>
-                    </div>
-                    <div className="compare-box-value">{current.benchmarkKey}</div>
+                <div className="benchmark-horizontal-box">
+                  <div className="compare-box-label">
+                    <FileText size={14} className="text-emerald" />
+                    <span>Benchmark Answer</span>
                   </div>
+                  <div className="benchmark-horizontal-content">{current.benchmarkKey}</div>
+                </div>
 
-                  <div className="compare-box student-box">
-                    <div className="compare-box-label">
-                      <User size={14} className="text-indigo" />
-                      <span>Student Answer</span>
-                    </div>
-                    <div className="compare-box-value">{current.studentAnswerSnippet}</div>
+                <div className="benchmark-horizontal-box student-horizontal-box">
+                  <div className="compare-box-label">
+                    <User size={14} className="text-primary-indigo" />
+                    <span>Student Answer</span>
                   </div>
+                  <div className="benchmark-horizontal-content">{current.studentAnswerSnippet || 'No student answer captured.'}</div>
                 </div>
               </div>
             )}
@@ -368,7 +361,7 @@ export default function ReviewSubmission() {
               {filteredQuestions.map((q) => {
                 const globalIndex = questions.indexOf(q);
                 const isSelected = globalIndex === selectedIndex;
-                const isCorrect = q.scorePercent >= 90;
+                const questionState = getQuestionState(q.scorePercent);
                 return (
                   <button 
                     key={q.questionNo}
@@ -380,8 +373,8 @@ export default function ReviewSubmission() {
                     </div>
 
                     <div className="q-right">
-                      <span className={`q-status-icon ${isCorrect ? 'icon-correct' : 'icon-outline'}`}>
-                        {isCorrect ? <Check size={12} /> : null}
+                      <span className={`q-status-icon status-${questionState}`}>
+                        {questionState === 'correct' ? <Check size={12} /> : questionState === 'partial' ? <AlertTriangle size={12} /> : <XCircle size={12} />}
                       </span>
                       <strong className="q-score-label">{q.earnedMarks.toFixed(2)} / {q.marks}</strong>
                       <ChevronRight size={15} className="q-chevron" />

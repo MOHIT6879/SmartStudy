@@ -33,7 +33,7 @@ export default function Sidebar({ onClearDb }: SidebarProps) {
       {/* Brand Header */}
       <div className="sidebar-brand">
         <div className="sidebar-logo-icon">
-          <GraduationCap className="size-5 text-white" />
+          <img src="/logo.jpg" alt="Paatam AI logo" className="sidebar-logo-image" />
         </div>
         <div>
           <p className="sidebar-brand-name">PAATAM.AI</p>

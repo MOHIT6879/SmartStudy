@@ -25,6 +25,12 @@ export default function Classes() {
     fetchClasses();
   }, []);
 
+  const getAcademicYear = (createdAt: string) => {
+    const year = new Date(createdAt).getFullYear();
+    const validYear = Number.isFinite(year) && year > 2000 ? year : new Date().getFullYear();
+    return `${validYear}-${String((validYear + 1) % 100).padStart(2, '0')}`;
+  };
+
   const handleCreateClass = async () => {
     const name = newClassName.trim();
     const section = newSection.trim();
@@ -100,22 +106,29 @@ export default function Classes() {
             </p>
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
+          <div className="entity-cards-grid">
             {classes.map((cls) => (
-              <div
+              <button
                 key={cls.id}
-                className="submission-row-card"
-                style={{ cursor: 'pointer' }}
+                type="button"
+                className="entity-card entity-card-class"
                 onClick={() => navigate(`/classes/${cls.id}`)}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                  <div style={{ width: '2.5rem', height: '2.5rem', borderRadius: '0.625rem', background: '#EFF6FF', display: 'grid', placeItems: 'center', color: '#2563EB' }}>
+                <div className="entity-card-head">
+                  <div className="entity-card-icon entity-card-icon-class">
                     <GraduationCap className="size-5" />
                   </div>
-                  <div style={{ fontWeight: 700, fontSize: '1rem', color: '#111827' }}>{cls.section ? `${cls.name} - ${cls.section}` : cls.name}</div>
+                  <span className="entity-card-pill">Class</span>
                 </div>
-                <ChevronRight className="size-4 text-slate-400" />
-              </div>
+
+                <h3 className="entity-card-title">{cls.section ? `${cls.name} - Section ${cls.section}` : cls.name}</h3>
+                <p className="entity-card-subtitle">{getAcademicYear(cls.createdAt)}</p>
+
+                <div className="entity-card-footer">
+                  <span className="entity-card-action">View Details</span>
+                  <ChevronRight className="size-4" />
+                </div>
+              </button>
             ))}
           </div>
         )}
