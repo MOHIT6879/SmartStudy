@@ -12,6 +12,11 @@ import Classes from './pages/Classes';
 import ClassDetail from './pages/ClassDetail';
 import SubjectWorkspace from './pages/SubjectWorkspace';
 import PaperDetail from './pages/PaperDetail';
+import Analytics from './pages/Analytics';
+import Teachers from './pages/Teachers';
+import StudentsRoster from './pages/StudentsRoster';
+import Campuses from './pages/Campuses';
+import { AuthProvider } from './context/AuthContext';
 import { API_BASE_URL } from './config/api';
 
 // Route dispatcher that handles both path routing (/upload, /submissions) and legacy search params (?tab=scan)
@@ -25,6 +30,7 @@ function MainRouteDispatcher() {
     if (tab === 'queue') return <ReviewQueue />;
     if (tab === 'knowledge') return <KnowledgeBase />;
     if (tab === 'generator' || tab === 'exam-generator') return <ExamGenerator />;
+    if (tab === 'analytics') return <Analytics />;
     return <Overview />;
   }
 
@@ -47,9 +53,11 @@ function App() {
   };
 
   return (
-    <Router>
-      <AppLayout onClearDb={handleClearDb} />
-    </Router>
+    <AuthProvider>
+      <Router>
+        <AppLayout onClearDb={handleClearDb} />
+      </Router>
+    </AuthProvider>
   );
 }
 
@@ -58,30 +66,33 @@ function AppLayout({ onClearDb }: { onClearDb: () => void }) {
   const isReviewWorkspace = /^\/(review|verify)\//.test(location.pathname);
 
   return (
-      <div className="app-shell-container">
-        {/* PAATAM.AI Left Navigation Sidebar */}
-        {!isReviewWorkspace && <Sidebar onClearDb={onClearDb} />}
+    <div className="app-shell-container">
+      {/* PAATAM.AI Left Navigation Sidebar */}
+      {!isReviewWorkspace && <Sidebar onClearDb={onClearDb} />}
 
-        {/* Main Workspace Area */}
-        <div className="app-main-content">
-          <Routes>
-            <Route path="/" element={<MainRouteDispatcher />} />
-            <Route path="/classes" element={<Classes />} />
-            <Route path="/classes/:classId" element={<ClassDetail />} />
-            <Route path="/classes/:classId/:classSubjectId" element={<SubjectWorkspace />} />
-            <Route path="/papers/:assignmentId" element={<PaperDetail />} />
-            <Route path="/upload" element={<ScanGrade />} />
-            <Route path="/submissions" element={<ReviewQueue />} />
-            <Route path="/knowledge" element={<KnowledgeBase />} />
-            <Route path="/generator" element={<ExamGenerator />} />
-            <Route path="/review/:id" element={<ReviewSubmission />} />
-            <Route path="/verify/:id" element={<ReviewSubmission />} />
-            <Route path="/student" element={<StudentPortal />} />
-            <Route path="/parent" element={<ParentPortal />} />
-          </Routes>
-        </div>
+      {/* Main Workspace Area */}
+      <div className="app-main-content">
+        <Routes>
+          <Route path="/" element={<MainRouteDispatcher />} />
+          <Route path="/analytics" element={<Analytics />} />
+          <Route path="/classes" element={<Classes />} />
+          <Route path="/classes/:classId" element={<ClassDetail />} />
+          <Route path="/classes/:classId/:classSubjectId" element={<SubjectWorkspace />} />
+          <Route path="/teachers" element={<Teachers />} />
+          <Route path="/students" element={<StudentsRoster />} />
+          <Route path="/campuses" element={<Campuses />} />
+          <Route path="/papers/:assignmentId" element={<PaperDetail />} />
+          <Route path="/upload" element={<ScanGrade />} />
+          <Route path="/submissions" element={<ReviewQueue />} />
+          <Route path="/knowledge" element={<KnowledgeBase />} />
+          <Route path="/generator" element={<ExamGenerator />} />
+          <Route path="/review/:id" element={<ReviewSubmission />} />
+          <Route path="/verify/:id" element={<ReviewSubmission />} />
+          <Route path="/student" element={<StudentPortal />} />
+          <Route path="/parent" element={<ParentPortal />} />
+        </Routes>
       </div>
-    
+    </div>
   );
 }
 

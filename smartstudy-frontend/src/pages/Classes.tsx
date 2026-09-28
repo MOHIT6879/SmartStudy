@@ -3,7 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { GraduationCap, Plus, ChevronRight } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
 
-type ClassItem = { id: string; name: string; section: string | null; createdAt: string };
+type ClassItem = {
+  id: string;
+  name: string;
+  section: string | null;
+  sections?: { id: string; section_name: string; strength: number }[];
+  createdAt: string;
+};
 
 export default function Classes() {
   const navigate = useNavigate();
@@ -122,7 +128,14 @@ export default function Classes() {
                 </div>
 
                 <h3 className="entity-card-title">{cls.section ? `${cls.name} - Section ${cls.section}` : cls.name}</h3>
-                <p className="entity-card-subtitle">{getAcademicYear(cls.createdAt)}</p>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.2rem' }}>
+                  <p className="entity-card-subtitle" style={{ margin: 0 }}>{getAcademicYear(cls.createdAt)}</p>
+                  {cls.sections && cls.sections.length > 0 && (
+                    <span style={{ fontSize: '0.6875rem', fontWeight: 600, color: '#059669', background: '#ECFDF5', padding: '0.1rem 0.4rem', borderRadius: '4px' }}>
+                      {cls.sections.reduce((acc, s) => acc + (s.strength || 0), 0)} students
+                    </span>
+                  )}
+                </div>
 
                 <div className="entity-card-footer">
                   <span className="entity-card-action">View Details</span>

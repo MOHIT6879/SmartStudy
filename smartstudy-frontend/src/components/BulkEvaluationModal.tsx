@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layers, Upload, X, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
+import { Layers, Upload, X, CheckCircle2, Clock, AlertCircle, Sparkles } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
 import LanguageSelect from './LanguageSelect';
 
@@ -15,6 +15,7 @@ export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose
   const [selectedLanguage, setSelectedLanguage] = useState('English');
   const [assignmentTitle, setAssignmentTitle] = useState('');
   const [markingScheme, setMarkingScheme] = useState('');
+  const [autoSplitPdf, setAutoSplitPdf] = useState(true);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -81,6 +82,7 @@ export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose
       formData.append('className', className);
       formData.append('subject', assignmentTitle);
       formData.append('markingScheme', markingScheme);
+      formData.append('autoSplitPdf', autoSplitPdf ? 'true' : 'false');
 
       const res = await fetch(`${API_BASE_URL}/api/submissions/bulk`, {
         method: 'POST',
@@ -182,6 +184,37 @@ export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose
               <p style={{ fontSize: '0.75rem', color: '#64748B', margin: '0.35rem 0 0 0' }}>
                 Applies to every sheet in this batch and takes priority over the assignment's stored benchmark key when they disagree.
               </p>
+            </div>
+
+            {/* Smart Multi-Student PDF Auto-Split Card */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '0.75rem',
+                padding: '0.75rem 1rem',
+                background: autoSplitPdf ? '#F0FDF4' : '#F8FAFC',
+                border: autoSplitPdf ? '1px solid #BBF7D0' : '1px solid #E2E8F0',
+                borderRadius: '0.5rem',
+                transition: 'all 0.2s ease'
+              }}
+            >
+              <input
+                type="checkbox"
+                id="auto-split-pdf"
+                checked={autoSplitPdf}
+                onChange={(e) => setAutoSplitPdf(e.target.checked)}
+                style={{ width: '1.15rem', height: '1.15rem', marginTop: '0.15rem', cursor: 'pointer', accentColor: '#16A34A' }}
+              />
+              <label htmlFor="auto-split-pdf" style={{ cursor: 'pointer', margin: 0, flex: 1 }}>
+                <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: autoSplitPdf ? '#166534' : '#334155', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Sparkles className="size-3.5 text-green-600" />
+                  <span>Auto-Split Multi-Student PDF (AI Name & Roll No Detection)</span>
+                </div>
+                <div style={{ fontSize: '0.75rem', color: autoSplitPdf ? '#15803D' : '#64748B', marginTop: '0.15rem' }}>
+                  If uploading a single combined PDF (e.g. 24 students, ~14 sides each), Paatam AI will automatically detect handwritten names at the top of pages, segregate each student's paper, and evaluate each individually.
+                </div>
+              </label>
             </div>
 
             {/* Drop Zone */}

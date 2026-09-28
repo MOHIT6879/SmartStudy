@@ -4,6 +4,7 @@ import { getConfiguredGeminiModel } from './aiService.js';
 import { expandPdfFilesToImages } from './pdfRasterService.js';
 import { performOcrPages } from './ocrService.js';
 import { supabase, uploadImageToSupabase } from '../db/supabase.js';
+import { detectAndSplitStudentSubmissions } from './studentBoundaryService.js';
 
 export interface BatchItemFile {
   buffer: Buffer;
@@ -14,6 +15,8 @@ export interface BatchItemFile {
   // ZIP folder share a groupKey (legitimate multi-page submission); everything else is unique per
   // file so similarly-named uploads (e.g. IMG_1234.jpg, IMG_1235.jpg) are never merged together.
   groupKey?: string;
+  // Pre-extracted during single-pass streaming OCR to eliminate redundant API calls
+  preExtractedOcr?: string;
 }
 
 export interface BatchJob {
@@ -41,9 +44,17 @@ const isSupabaseConfigured = () => {
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
 /**
- * Unpacks ZIP archives recursively and normalizes incoming files (ZIPs, PDFs, Images)
+ * Unpacks ZIP archives recursively, runs AI student boundary detection on multi-page PDFs,
+ * and normalizes incoming files (ZIPs, PDFs, Images).
  */
-function unpackAndNormalizeFiles(rawFiles: BatchItemFile[]): BatchItemFile[] {
+async function unpackAndNormalizeFiles(
+  rawFiles: BatchItemFile[],
+  autoSplitPdf: boolean = true,
+  targetClassName?: string,
+  assignmentId?: string,
+  selectedLanguage: string = 'English',
+  targetSubject?: string
+): Promise<BatchItemFile[]> {
   const normalizedFiles: BatchItemFile[] = [];
   let uniqueCounter = 0;
 
@@ -125,6 +136,47 @@ function unpackAndNormalizeFiles(rawFiles: BatchItemFile[]): BatchItemFile[] {
         else mime = 'image/jpeg';
       }
 
+      const isPdf = mime === 'application/pdf' || lowerName.endsWith('.pdf');
+
+      // AI Student Boundary Detection & Auto-splitting for multi-page PDFs
+      if (isPdf && autoSplitPdf) {
+        try {
+          const splitBatches = await detectAndSplitStudentSubmissions(file.buffer, {
+            targetClassName,
+            assignmentId,
+            language: selectedLanguage,
+            subject: targetSubject
+          });
+
+          if (splitBatches.length > 1) {
+            console.log(`✨ [SMART SPLITTER] Segregated "${filename}" into ${splitBatches.length} individual student submissions with single-pass OCR!`);
+            for (const batch of splitBatches) {
+              normalizedFiles.push({
+                buffer: batch.pdfBuffer,
+                originalname: `${batch.studentName.replace(/\s+/g, '_')}_p${batch.startPage}-p${batch.endPage}.pdf`,
+                mimetype: 'application/pdf',
+                studentName: batch.studentName,
+                groupKey: `split:${uniqueCounter++}`,
+                preExtractedOcr: batch.ocrText
+              });
+            }
+            continue;
+          } else if (splitBatches.length === 1 && splitBatches[0].studentName && !splitBatches[0].studentName.startsWith('Student ')) {
+            normalizedFiles.push({
+              buffer: file.buffer,
+              originalname: file.originalname,
+              mimetype: mime,
+              studentName: splitBatches[0].studentName,
+              groupKey: `loose:${uniqueCounter++}`,
+              preExtractedOcr: splitBatches[0].ocrText
+            });
+            continue;
+          }
+        } catch (splitErr) {
+          console.warn(`⚠️ [SMART SPLITTER] Boundary detection notice for "${filename}":`, splitErr);
+        }
+      }
+
       const inferredName = file.studentName || extractStudentNameFromFilename(file.originalname) || undefined;
 
       normalizedFiles.push({
@@ -132,8 +184,6 @@ function unpackAndNormalizeFiles(rawFiles: BatchItemFile[]): BatchItemFile[] {
         originalname: file.originalname,
         mimetype: mime,
         studentName: inferredName,
-        // One loose top-level upload = one student's submission — never merge with another file
-        // just because the filenames happen to look similar.
         groupKey: `loose:${uniqueCounter++}`
       });
     }
@@ -151,7 +201,8 @@ export function createBatchJob(
   selectedLanguage: string = 'English',
   targetClassName?: string,
   targetSubject?: string,
-  markingSchemeText?: string
+  markingSchemeText?: string,
+  autoSplitPdf: boolean = true
 ): BatchJob {
   const jobId = 'batch-' + Date.now();
   const now = new Date().toISOString();
@@ -172,7 +223,7 @@ export function createBatchJob(
   batchJobs[jobId] = newJob;
 
   // Launch background processing asynchronously
-  processBatchQueue(jobId, files, assignmentId, selectedLanguage, targetClassName, targetSubject, markingSchemeText).catch((err) => {
+  processBatchQueue(jobId, files, assignmentId, selectedLanguage, targetClassName, targetSubject, markingSchemeText, autoSplitPdf).catch((err) => {
     console.error(`❌ Batch Job ${jobId} execution error:`, err);
     if (batchJobs[jobId]) {
       batchJobs[jobId].status = 'failed';
@@ -200,7 +251,8 @@ async function processBatchQueue(
   selectedLanguage: string = 'English',
   targetClassName?: string,
   targetSubject?: string,
-  markingSchemeText?: string
+  markingSchemeText?: string,
+  autoSplitPdf: boolean = true
 ) {
   const job = batchJobs[jobId];
   if (!job) return;
@@ -208,8 +260,8 @@ async function processBatchQueue(
   job.status = 'processing';
   job.updatedAt = new Date().toISOString();
 
-  // 1. Unpack ZIP archives and normalize all files (ZIPs, PDFs, Images)
-  const unpackedFiles = unpackAndNormalizeFiles(rawFiles);
+  // 1. Unpack ZIP archives, auto-split multi-student PDFs, and normalize all files
+  const unpackedFiles = await unpackAndNormalizeFiles(rawFiles, autoSplitPdf, targetClassName, assignmentId, selectedLanguage, targetSubject);
 
   let className = targetClassName || 'General Class';
   let subjectName = targetSubject || 'Unassigned Subject';
@@ -266,10 +318,17 @@ async function processBatchQueue(
         }
       }
       const primaryCloudUrl = cloudUrls.length > 0 ? cloudUrls[0] : '';
+      let ocrText = '';
+      let langCode = selectedLanguage.substring(0, 3).toUpperCase();
 
-      const ocrResult = await performOcrPages(pageBuffers, selectedLanguage, pageFiles.map((file) => file.mimetype), subjectName);
-      const ocrText = ocrResult.ocrText;
-      const langCode = ocrResult.langCode;
+      if (primaryFile?.preExtractedOcr) {
+        ocrText = primaryFile.preExtractedOcr;
+        console.log(`⚡ [SINGLE-PASS OCR] Reusing pre-extracted OCR (${ocrText.length} chars) for "${studentName}" (zero duplicate OCR calls).`);
+      } else {
+        const ocrResult = await performOcrPages(pageBuffers, selectedLanguage, pageFiles.map((file) => file.mimetype), subjectName);
+        ocrText = ocrResult.ocrText;
+        langCode = ocrResult.langCode;
+      }
 
       // Evaluate student answer paper via Direct Google Gemini API
       const pdfEval = await evaluateStudentAnswerAgainstPdf(
@@ -301,9 +360,26 @@ async function processBatchQueue(
         questionEvaluations: pdfEval.questionEvaluations
       };
 
+      let matchedStudentId: string | null = null;
+      if (isSupabaseConfigured() && studentName) {
+        try {
+          const { data: stMatch } = await supabase
+            .from('students')
+            .select('id')
+            .ilike('name', studentName.trim())
+            .limit(1);
+          if (stMatch && stMatch.length > 0) {
+            matchedStudentId = stMatch[0].id;
+          }
+        } catch (stErr) {
+          console.warn('⚠️ Student match notice in batch:', stErr);
+        }
+      }
+
       const submissionPayload: any = {
         id: subId,
         assignment_id: assignmentId || 'assign-1',
+        student_id: matchedStudentId,
         student_name: studentName,
         subject: subjectName,
         language: selectedLanguage,
