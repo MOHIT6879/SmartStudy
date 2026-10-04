@@ -45,6 +45,8 @@ router.post(['/assignments', '/save-assignment'], optionalAuth, async (req: Auth
 
     const reasoningModel = await determineReasoningModel(subject || classVal || titleVal, JSON.stringify(questions || []), language || 'English');
 
+    const statusVal = req.body.status || 'dispatched';
+
     const newAssignment: any = {
       id,
       title: titleVal,
@@ -55,7 +57,7 @@ router.post(['/assignments', '/save-assignment'], optionalAuth, async (req: Auth
       duration_minutes: Number(durationMinutes) || 60,
       questions_json: JSON.stringify(questions || []),
       reasoning_model: reasoningModel,
-      status: 'dispatched',
+      status: statusVal,
       created_at: createdAt,
       class_id: classId || null,
       class_subject_id: classSubjectId || null,
@@ -76,44 +78,47 @@ router.post(['/assignments', '/save-assignment'], optionalAuth, async (req: Auth
       if (retryErr) console.error('❌ Supabase DB Insert Fallback Error:', retryErr.message);
     }
 
-    // Lookup students to dispatch notifications
-    let targetStudents: any[] = [];
-    if (sectionId) {
-      const { data: secStudents } = await supabase.from('students').select('id, name').eq('section_id', sectionId);
-      if (secStudents && secStudents.length > 0) targetStudents = secStudents;
-    } else if (classId) {
-      const { data: clsStudents } = await supabase.from('students').select('id, name').eq('class_id', classId);
-      if (clsStudents && clsStudents.length > 0) targetStudents = clsStudents;
-    }
+    // Lookup students to dispatch notifications ONLY if status is dispatched
+    if (statusVal === 'dispatched') {
+      let targetStudents: any[] = [];
+      if (sectionId) {
+        const { data: secStudents } = await supabase.from('students').select('id, name').eq('section_id', sectionId);
+        if (secStudents && secStudents.length > 0) targetStudents = secStudents;
+      } else if (classId) {
+        const { data: clsStudents } = await supabase.from('students').select('id, name').eq('class_id', classId);
+        if (clsStudents && clsStudents.length > 0) targetStudents = clsStudents;
+      }
 
-    if (targetStudents.length === 0) {
-      const { data: sampleStudents } = await supabase.from('students').select('id, name').limit(10);
-      if (sampleStudents && sampleStudents.length > 0) targetStudents = sampleStudents;
-    }
+      if (targetStudents.length === 0) {
+        const { data: sampleStudents } = await supabase.from('students').select('id, name').limit(10);
+        if (sampleStudents && sampleStudents.length > 0) targetStudents = sampleStudents;
+      }
 
-    if (targetStudents.length > 0) {
-      for (const st of targetStudents) {
+      if (targetStudents.length > 0) {
+        for (const st of targetStudents) {
+          await sendAndLogParentNotification({
+            supabase,
+            type: 'assignment_dispatched',
+            title: '📲 WhatsApp Alert: New Class Assignment',
+            message: `New assignment "${titleVal}" has been assigned for ${classVal}. Please check the Student Portal.`,
+            details_json: { title: titleVal, className: classVal },
+            studentId: st.id,
+            studentName: st.name
+          });
+        }
+      } else {
         await sendAndLogParentNotification({
           supabase,
           type: 'assignment_dispatched',
           title: '📲 WhatsApp Alert: New Class Assignment',
           message: `New assignment "${titleVal}" has been assigned for ${classVal}. Please check the Student Portal.`,
-          details_json: { title: titleVal, className: classVal },
-          studentId: st.id,
-          studentName: st.name
+          details_json: { title: titleVal, className: classVal }
         });
       }
+      console.log(`✅ [ASSIGNMENT DISPATCHED] ID: ${id} ready for student uploads.`);
     } else {
-      await sendAndLogParentNotification({
-        supabase,
-        type: 'assignment_dispatched',
-        title: '📲 WhatsApp Alert: New Class Assignment',
-        message: `New assignment "${titleVal}" has been assigned for ${classVal}. Please check the Student Portal.`,
-        details_json: { title: titleVal, className: classVal }
-      });
+      console.log(`💾 [ASSIGNMENT SAVED] ID: ${id} saved as draft/paper without dispatch.`);
     }
-
-    console.log(`✅ [ASSIGNMENT DISPATCHED] ID: ${id} ready for student uploads.`);
 
     res.json({
       success: true,
@@ -127,7 +132,7 @@ router.post(['/assignments', '/save-assignment'], optionalAuth, async (req: Auth
         durationMinutes: Number(durationMinutes) || 60,
         questions,
         reasoningModel,
-        status: 'dispatched',
+        status: statusVal,
         createdAt,
         classId: classId || null,
         classSubjectId: classSubjectId || null,
@@ -139,25 +144,29 @@ router.post(['/assignments', '/save-assignment'], optionalAuth, async (req: Auth
       }
     });
   } catch (err: any) {
-    console.error('❌ Assignment Dispatch Error:', err);
-    res.status(500).json({ success: false, message: err?.message || 'Error dispatching assignment' });
+    console.error('❌ Assignment Dispatch/Save Error:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Error processing assignment' });
   }
 });
 
 // List Assignments
 router.get('/assignments', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    let query = supabase.from('assignments').select('*, section(*), classes(name)').order('created_at', { ascending: false });
     const { classSubjectId, sectionId, classId } = req.query;
 
-    if (classSubjectId) query = query.eq('class_subject_id', String(classSubjectId));
-    if (sectionId) query = query.eq('section_id', String(sectionId));
-    if (classId) query = query.eq('class_id', String(classId));
+    let { data, error } = await supabase.from('assignments').select('*').order('created_at', { ascending: false });
 
-    const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      console.warn('⚠️ Supabase assignments query notice:', error.message);
+      throw error;
+    }
 
-    const assignments = (data || []).map((r: any) => ({
+    let filtered = data || [];
+    if (classSubjectId) filtered = filtered.filter((r: any) => String(r.class_subject_id) === String(classSubjectId));
+    if (sectionId) filtered = filtered.filter((r: any) => String(r.section_id) === String(sectionId));
+    if (classId) filtered = filtered.filter((r: any) => String(r.class_id) === String(classId));
+
+    const assignments = filtered.map((r: any) => ({
       id: r.id,
       title: r.title,
       className: r.class_name,
@@ -191,7 +200,7 @@ router.get('/assignments/:id', optionalAuth, async (req: AuthenticatedRequest, r
     const { id } = req.params;
     const { data: r, error } = await supabase
       .from('assignments')
-      .select('*, section(*), classes(*)')
+      .select('*')
       .eq('id', id)
       .single();
 
@@ -216,7 +225,7 @@ router.get('/assignments/:id', optionalAuth, async (req: AuthenticatedRequest, r
         sectionId: r.section_id || null,
         teacherSubjectId: r.teacher_subject_id || null,
         section: r.section || null,
-        classes: r.classes || null,
+        classes: null,
         answerKeyText: r.answer_key_text || '',
         pdfUrl: r.question_paper_url || '',
         answerKeyUrl: r.answer_key_url || ''

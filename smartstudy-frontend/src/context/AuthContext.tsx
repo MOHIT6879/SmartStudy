@@ -51,10 +51,10 @@ export const DEMO_PROFILES: Record<UserRole, UserProfile> = {
   },
   TEACHER: {
     id: 'teacher-101',
-    name: 'Priya Sharma',
-    email: 'priya.sharma@paatam.edu',
+    name: 'Mohit Yadav',
+    email: 'mohit.yadav@paatam.edu',
     role: 'TEACHER',
-    title: 'Senior Faculty (Physics & Math)',
+    title: 'Teacher',
     branchId: 'branch-main',
     branchName: 'Hyderabad Central Campus'
   },

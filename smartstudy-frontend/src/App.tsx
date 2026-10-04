@@ -1,5 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
+import TopBar from './components/TopBar';
+import LoginPage from './pages/LoginPage';
 import Overview from './pages/Overview';
 import ScanGrade from './pages/ScanGrade';
 import ReviewQueue from './pages/ReviewQueue';
@@ -63,17 +65,27 @@ function App() {
 
 function AppLayout({ onClearDb }: { onClearDb: () => void }) {
   const location = useLocation();
-  const isReviewWorkspace = /^\/(review|verify)\//.test(location.pathname);
+  const isLoginPage = location.pathname === '/login';
+
+  if (isLoginPage) {
+    return (
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+      </Routes>
+    );
+  }
 
   return (
     <div className="app-shell-container">
       {/* PAATAM.AI Left Navigation Sidebar */}
-      {!isReviewWorkspace && <Sidebar onClearDb={onClearDb} />}
+      <Sidebar onClearDb={onClearDb} />
 
-      {/* Main Workspace Area */}
+      {/* Main Workspace Area with Global TopBar */}
       <div className="app-main-content">
+        <TopBar onClearDb={onClearDb} />
         <Routes>
           <Route path="/" element={<MainRouteDispatcher />} />
+          <Route path="/login" element={<LoginPage />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/classes" element={<Classes />} />
           <Route path="/classes/:classId" element={<ClassDetail />} />

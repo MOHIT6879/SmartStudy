@@ -2,7 +2,20 @@ import { Router, Response } from 'express';
 import { supabase, uploadImageToSupabase } from '../db/supabase.js';
 import { AuthenticatedRequest, optionalAuth } from '../middleware/authMiddleware.js';
 import { uploadDisk } from '../middleware/upload.js';
-import { ingestPdfDocument, generateRagQuestions } from '../services/ragService.js';
+import { 
+  ingestPdfDocument, 
+  generateRagQuestions, 
+  getCurriculumTopics, 
+  saveCurriculumTopics, 
+  deleteCurriculumTopic,
+  deleteAllCurriculumTopics,
+  ingestSyllabusDocument, 
+  generateBlueprintExamPaper,
+  ingestChapterDocument,
+  getSubjectChapters,
+  deleteSubjectChapter,
+  generateUnifiedExamPaper
+} from '../services/ragService.js';
 import { expandPdfFilesToImages } from '../services/pdfRasterService.js';
 import { extractQuestionsFromImage, attachStimulusImages, callGemini36Api, getConfiguredGeminiModel } from '../services/aiService.js';
 
@@ -179,26 +192,291 @@ router.post('/rag/extract-answer-key', uploadDisk.any(), optionalAuth, async (re
 });
 
 // -------------------------------------------------------------
-// 5. Ingested Chapter Embeddings Exploration
+// 5. Chapter-Wise Knowledge Base Ingestion & Management
 // -------------------------------------------------------------
+router.post(['/rag/chapter/ingest', '/rag/chapters/ingest'], uploadDisk.any(), optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { className, subjectName, chapterTitle, chapterNumber } = req.body;
+    const uploadedFiles = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
+    const targetClass = String(className || '').trim();
+    const targetSubject = String(subjectName || req.body.subject || '').trim() || 'General';
+
+    if (!targetClass) {
+      return res.status(400).json({ success: false, message: 'Class / Grade is required so material is indexed correctly.' });
+    }
+    if (uploadedFiles.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please upload at least one chapter PDF document.' });
+    }
+
+    const parsedChapterNumber = chapterNumber ? parseInt(String(chapterNumber), 10) : undefined;
+    const result = await ingestChapterDocument(
+      uploadedFiles,
+      targetClass,
+      targetSubject,
+      chapterTitle,
+      parsedChapterNumber
+    );
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('❌ Chapter Ingestion Error:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Error ingesting chapter PDF' });
+  }
+});
+
 router.get('/rag/chapters', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { className } = req.query;
-    let query = supabase.from('textbook_embeddings').select('class_name, chapter_title').order('created_at', { ascending: false });
-    if (className) query = query.eq('class_name', String(className));
+    const className = String(req.query.className || '').trim();
+    const subjectName = req.query.subjectName ? String(req.query.subjectName).trim() : undefined;
 
-    const { data, error } = await query;
-    if (error) throw error;
+    if (!className) {
+      return res.status(400).json({ success: false, message: 'className query parameter is required.' });
+    }
 
-    // Deduplicate
-    const uniqueChapters = Array.from(new Set((data || []).map((d) => `${d.class_name}:::${d.chapter_title}`))).map((key) => {
-      const [cls, chp] = key.split(':::');
-      return { className: cls, chapterTitle: chp };
-    });
-
-    res.json({ success: true, chapters: uniqueChapters });
+    const chapters = await getSubjectChapters(className, subjectName);
+    res.json({ success: true, chapters });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || 'Error fetching chapters' });
+  }
+});
+
+router.delete('/rag/chapters/:id', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = String(req.params.id || '');
+    const className = req.query.className ? String(req.query.className) : undefined;
+    if (!id) return res.status(400).json({ success: false, message: 'Chapter ID required' });
+
+    const ok = await deleteSubjectChapter(id, className);
+    res.json({ success: ok, message: ok ? 'Chapter deleted successfully.' : 'Unable to delete chapter.' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Error deleting chapter' });
+  }
+});
+
+// -------------------------------------------------------------
+// 6. Curriculum Topics Hierarchy (Fetch & Update)
+// -------------------------------------------------------------
+router.get('/rag/topics', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const className = String(req.query.className || '').trim();
+    if (!className) {
+      return res.status(400).json({ success: false, message: 'className query parameter is required.' });
+    }
+    const topics = await getCurriculumTopics(className);
+    res.json({ success: true, topics });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Error fetching curriculum topics' });
+  }
+});
+
+router.post('/rag/topics', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { className, topics } = req.body;
+    if (!className || !Array.isArray(topics)) {
+      return res.status(400).json({ success: false, message: 'className and topics array are required.' });
+    }
+    const saved = await saveCurriculumTopics(className, topics);
+    res.json({ success: true, topics: saved });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Error saving curriculum topics' });
+  }
+});
+
+router.delete('/rag/topics/:id', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!id) return res.status(400).json({ success: false, message: 'Topic ID required' });
+    const ok = await deleteCurriculumTopic(id);
+    res.json({ success: ok, message: ok ? 'Topic deleted successfully.' : 'Unable to delete topic.' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Error deleting topic' });
+  }
+});
+
+router.delete('/rag/topics', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const className = String(req.query.className || '').trim();
+    if (!className) {
+      return res.status(400).json({ success: false, message: 'className query parameter required.' });
+    }
+    const ok = await deleteAllCurriculumTopics(className);
+    res.json({ success: ok, message: ok ? 'All topics cleared successfully.' : 'Unable to clear topics.' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Error clearing topics' });
+  }
+});
+
+// -------------------------------------------------------------
+// 7. Multi-Stage Topic-Wise Syllabus Ingestion
+// -------------------------------------------------------------
+router.post('/rag/ingest-syllabus', uploadDisk.any(), optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { className, chapterTitle, isComprehensiveSyllabus } = req.body;
+    const uploadedFiles = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
+    const targetClass = String(className || '').trim();
+
+    if (!targetClass) {
+      return res.status(400).json({ success: false, message: 'A class/subject is required.' });
+    }
+    if (uploadedFiles.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please upload at least one syllabus or textbook document.' });
+    }
+
+    const isComp = isComprehensiveSyllabus === 'true' || isComprehensiveSyllabus === true || isComprehensiveSyllabus === undefined;
+    const result = await ingestSyllabusDocument(uploadedFiles, targetClass, chapterTitle || 'Comprehensive Syllabus', isComp);
+
+    res.json({
+      success: true,
+      message: `Successfully indexed ${result.chunksCount} topic-scoped chunks into Supabase pgvector (${result.topics.length} topics identified).`,
+      chunksCount: result.chunksCount,
+      topics: result.topics
+    });
+  } catch (err: any) {
+    console.error('❌ Syllabus Ingestion Error:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Error during syllabus ingestion' });
+  }
+});
+
+// -------------------------------------------------------------
+// 8. Indian School Blueprint Exam Generator
+// -------------------------------------------------------------
+router.post('/rag/generate-blueprint', uploadDisk.any(), optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { className, subjectLanguage, examTitle, targetMarks } = req.body;
+    let blueprint = req.body.blueprint;
+    if (typeof blueprint === 'string') {
+      try { blueprint = JSON.parse(blueprint); } catch (e) {}
+    }
+
+    if (!className) {
+      return res.status(400).json({ success: false, message: 'className is required.' });
+    }
+    if (!Array.isArray(blueprint) || blueprint.length === 0) {
+      return res.status(400).json({ success: false, message: 'Blueprint allocations array is required.' });
+    }
+
+    const result = await generateBlueprintExamPaper(
+      className,
+      blueprint,
+      {
+        examTitle: examTitle || `${className} Examination Paper`,
+        subjectLanguage: subjectLanguage || 'English',
+        targetMarks: targetMarks ? parseInt(targetMarks, 10) : undefined
+      }
+    );
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('❌ Blueprint Exam Generation Error:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Error generating blueprint exam' });
+  }
+});
+
+// -------------------------------------------------------------
+// 9. Unified Single-Mode Exam Question Paper Generator
+// -------------------------------------------------------------
+router.post('/rag/generate-exam', uploadDisk.any(), optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const reqStart = Date.now();
+  const timeStr = new Date().toLocaleTimeString();
+
+  try {
+    const {
+      examTitle,
+      targetMarks,
+      className,
+      subjectName,
+      language,
+      difficulty
+    } = req.body;
+
+    let chapterTitles = req.body.chapterTitles || req.body.selectedChapters || [];
+    if (typeof chapterTitles === 'string') {
+      try { chapterTitles = JSON.parse(chapterTitles); } catch (e) { chapterTitles = [chapterTitles]; }
+    }
+
+    let subtopics = req.body.subtopics || req.body.selectedSubtopics || [];
+    if (typeof subtopics === 'string') {
+      try { subtopics = JSON.parse(subtopics); } catch (e) { subtopics = [subtopics]; }
+    }
+
+    let questionCounts = req.body.questionCounts || {
+      mcqCount: Number(req.body.mcqCount || 0),
+      veryShortCount: Number(req.body.veryShortCount || 0),
+      shortCount: Number(req.body.shortCount || 0),
+      descriptiveCount: Number(req.body.descriptiveCount || 0)
+    };
+    if (typeof questionCounts === 'string') {
+      try { questionCounts = JSON.parse(questionCounts); } catch (e) {}
+    }
+
+    if (!className) {
+      console.warn(`⚠️ [API REJECTED] /api/rag/generate-exam: className is missing from payload.`);
+      return res.status(400).json({ success: false, message: 'Class name is required.' });
+    }
+
+    const targetMarksNum = targetMarks ? parseInt(String(targetMarks), 10) : 40;
+
+    let blueprint = req.body.blueprint || [];
+    if (typeof blueprint === 'string') {
+      try { blueprint = JSON.parse(blueprint); } catch (e) { blueprint = []; }
+    }
+
+    console.log(`\n===============================================================`);
+    console.log(`📡 [API INCOMING] POST /api/rag/generate-exam (${timeStr})`);
+    console.log(`   ├─ Exam Title   : "${examTitle || `${className} Examination`}"`);
+    console.log(`   ├─ Target Marks : ${targetMarksNum} Marks`);
+    console.log(`   ├─ Class / Cohort: "${className}" | Subject: "${subjectName || 'General'}"`);
+    console.log(`   ├─ Language     : ${language || 'English'} | Difficulty: ${difficulty || 'Standard'}`);
+    console.log(`   ├─ Chapters (${chapterTitles.length}) : ${chapterTitles.join(', ') || 'All Available'}`);
+    console.log(`   ├─ Subtopics (${subtopics.length}): ${subtopics.length > 0 ? subtopics.slice(0, 4).join(', ') + (subtopics.length > 4 ? ` (+${subtopics.length - 4} more)` : '') : 'All Core Concepts'}`);
+    if (blueprint && blueprint.length > 0) {
+      console.log(`   └─ Blueprint (${blueprint.length} topic allocations configured):`);
+      blueprint.forEach((b: any, idx: number) => {
+        const title = b.chapterTitle || b.topic || `Topic ${idx + 1}`;
+        const mcq = Number(b.mcqCount ?? b.mcq) || 0;
+        const vsa = Number(b.veryShortCount ?? b.vsa) || 0;
+        const sa = Number(b.shortCount ?? b.sa) || 0;
+        const long = Number(b.descriptiveCount ?? b.long) || 0;
+        const bMarks = mcq * 1 + vsa * 2 + sa * 3 + long * 5;
+        console.log(`      [${idx + 1}] "${title}": ${bMarks} Marks (${mcq} MCQ, ${vsa} VSA, ${sa} SA, ${long} Long)`);
+      });
+    } else {
+      console.log(`   └─ Typology     : MCQs=${questionCounts.mcqCount}, VSA=${questionCounts.veryShortCount}, SA=${questionCounts.shortCount}, Long=${questionCounts.descriptiveCount}`);
+    }
+    console.log(`===============================================================`);
+
+    const result = await generateUnifiedExamPaper({
+      examTitle: examTitle || `${className} Examination Paper`,
+      targetMarks: targetMarksNum,
+      className,
+      subjectName: subjectName || 'General',
+      chapterTitles,
+      subtopics,
+      questionCounts: {
+        mcqCount: Number(questionCounts.mcqCount) || 0,
+        veryShortCount: Number(questionCounts.veryShortCount) || 0,
+        shortCount: Number(questionCounts.shortCount) || 0,
+        descriptiveCount: Number(questionCounts.descriptiveCount) || 0
+      },
+      blueprint,
+      language: language || 'English',
+      difficulty: difficulty || 'Standard'
+    });
+
+    const duration = ((Date.now() - reqStart) / 1000).toFixed(2);
+    console.log(`\n📤 [API RESPONSE] /api/rag/generate-exam completed in ${duration}s`);
+    console.log(`   ├─ HTTP Status  : 200 OK`);
+    console.log(`   ├─ Questions    : ${result.totalQuestions || 0} questions generated`);
+    console.log(`   └─ Marks Tally  : ${result.totalMarks || 0} / ${targetMarksNum} Marks`);
+    console.log(`===============================================================\n`);
+
+    res.json(result);
+  } catch (err: any) {
+    const duration = ((Date.now() - reqStart) / 1000).toFixed(2);
+    console.error(`\n❌ [API ERROR] /api/rag/generate-exam failed after ${duration}s:`, err?.message || err);
+    console.error(err);
+    console.log(`===============================================================\n`);
+    res.status(500).json({ success: false, message: err?.message || 'Error generating examination paper' });
   }
 });
 

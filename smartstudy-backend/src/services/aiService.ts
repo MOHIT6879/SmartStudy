@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { callSarvamChatApi, performSarvamVisionOcr, performSarvamVisionOcrChunks, supportsSarvamDocumentLanguage } from './sarvamService.js';
+import { aiGateway } from './aiGateway/index.js';
 dotenv.config();
 
 export interface QuestionStimulus {
@@ -101,12 +102,26 @@ export async function callGemini36Api(
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts }] })
+        body: JSON.stringify({
+          contents: [{ parts }],
+          generationConfig: {
+            maxOutputTokens: 32768,
+            temperature: 0.2,
+            thinkingConfig: {
+              thinkingBudget: 0
+            }
+          }
+        })
       });
 
       if (res.ok) {
         const data = await res.json() as any;
-        const responseText = data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
+        const candidate = data?.candidates?.[0];
+        const finishReason = candidate?.finishReason;
+        if (finishReason && finishReason !== 'STOP') {
+          console.warn(`⚠️ [GEMINI 3.6] Candidate finishReason: ${finishReason}`);
+        }
+        const responseText = candidate?.content?.parts?.[0]?.text || null;
         if (responseText) {
           console.log(`✅ [GEMINI 3.6] Successful response from ${modelName}`);
           return responseText;
@@ -196,69 +211,198 @@ export async function determineReasoningModel(subject: string, questionsText: st
   return getConfiguredGeminiModel();
 }
 
-function parseJsonValue(rawText: string, openingCharacter: '{' | '['): any {
-  if (!rawText) return null;
-  const fencedMatch = rawText.match(/```(?: json) ?\s * ([\s\S] *?)```/i);
-  const source = fencedMatch?.[1]?.trim() || rawText.trim();
-  const closingCharacter = openingCharacter === '{' ? '}' : ']';
-  const start = source.indexOf(openingCharacter);
-  if (start < 0) return null;
+function parseJsonValue(rawText: string, openingCharacter?: '{' | '['): any {
+  if (!rawText || typeof rawText !== 'string') return null;
 
+  // 1. Strip markdown code fence wrappers if present
+  let source = rawText.trim();
+  const fenceRegex = /```(?:json)?\s*([\s\S]*?)(?:```|$)/i;
+  const match = source.match(fenceRegex);
+  if (match && match[1]?.trim()) {
+    source = match[1].trim();
+  }
+
+  // 2. Quick direct parse attempt
+  try {
+    return JSON.parse(source);
+  } catch {
+    // Proceed to robust boundary search and sanitization
+  }
+
+  // 3. Determine start position and expected open/close characters
+  let startIdx = -1;
+  let openChar: '{' | '[' = openingCharacter || '{';
+  let closeChar: '}' | ']' = openChar === '{' ? '}' : ']';
+
+  if (openingCharacter) {
+    startIdx = source.indexOf(openingCharacter);
+  }
+
+  if (startIdx < 0) {
+    const firstBrace = source.indexOf('{');
+    const firstBracket = source.indexOf('[');
+    if (firstBrace >= 0 && firstBracket >= 0) {
+      if (firstBrace < firstBracket) {
+        startIdx = firstBrace;
+        openChar = '{';
+        closeChar = '}';
+      } else {
+        startIdx = firstBracket;
+        openChar = '[';
+        closeChar = ']';
+      }
+    } else if (firstBrace >= 0) {
+      startIdx = firstBrace;
+      openChar = '{';
+      closeChar = '}';
+    } else if (firstBracket >= 0) {
+      startIdx = firstBracket;
+      openChar = '[';
+      closeChar = ']';
+    } else {
+      return null;
+    }
+  }
+
+  // 4. Extract balanced JSON substring tracking strings & escapes
   let depth = 0;
   let inString = false;
   let escaped = false;
-  let jsonCandidate = '';
-  for (let index = start; index < source.length; index++) {
-    const character = source[index];
-    jsonCandidate += character;
+  let endIdx = -1;
+
+  for (let i = startIdx; i < source.length; i++) {
+    const char = source[i];
     if (escaped) {
       escaped = false;
       continue;
     }
-    if (character === '\\' && inString) {
+    if (char === '\\' && inString) {
       escaped = true;
       continue;
     }
-    if (character === '"') inString = !inString;
-    if (!inString && character === openingCharacter) depth++;
-    if (!inString && character === closingCharacter && --depth === 0) break;
-  }
-  if (depth !== 0) return null;
-
-  const sanitized = jsonCandidate.replace(/[\u0000-\u001F\u007F-\u009F]/g, (ch) => {
-    if (ch === '\n') return '\\n';
-    if (ch === '\r') return '\\r';
-    if (ch === '\t') return '\\t';
-    return '';
-  });
-
-  let repaired = '';
-  let stringMode = false;
-  for (let index = 0; index < sanitized.length; index++) {
-    const character = sanitized[index];
-    if (character === '"' && (index === 0 || sanitized[index - 1] !== '\\')) {
-      stringMode = !stringMode;
-      repaired += character;
+    if (char === '"') {
+      inString = !inString;
       continue;
     }
-    if (character === '\\' && stringMode) {
-      const next = sanitized[index + 1];
-      if (next && !'"\\/bfnrtu'.includes(next)) repaired += '\\\\';
-      else repaired += character;
+    if (!inString) {
+      if (char === openChar) depth++;
+      else if (char === closeChar) {
+        depth--;
+        if (depth === 0) {
+          endIdx = i;
+          break;
+        }
+      }
+    }
+  }
+
+  let candidate = endIdx >= 0 ? source.substring(startIdx, endIdx + 1) : source.substring(startIdx);
+
+  // If unbalanced (e.g. truncated output), intelligently close at last complete object
+  if (depth > 0) {
+    if (openChar === '[') {
+      const lastObjClose = candidate.lastIndexOf('}');
+      if (lastObjClose > 0) {
+        candidate = candidate.substring(0, lastObjClose + 1) + ']';
+        depth = 0;
+      } else {
+        candidate += closeChar.repeat(depth);
+      }
+    } else {
+      candidate += closeChar.repeat(depth);
+    }
+  }
+
+  // 5. Try parsing the extracted candidate directly
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    // Proceed to character-level string sanitization
+  }
+
+  // 6. Character-level sanitization:
+  // - ONLY escape control characters INSIDE strings (never outside!)
+  // - Fix invalid backslash escapes inside strings
+  // - Strip trailing commas outside strings
+  let sanitized = '';
+  inString = false;
+  escaped = false;
+
+  for (let i = 0; i < candidate.length; i++) {
+    const char = candidate[i];
+
+    if (escaped) {
+      sanitized += char;
+      escaped = false;
       continue;
     }
-    repaired += character;
+
+    if (char === '\\' && inString) {
+      const next = candidate[i + 1];
+      if (next && '"\\/bfnrtu'.includes(next)) {
+        sanitized += char;
+        escaped = true;
+      } else {
+        sanitized += '\\\\';
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      sanitized += char;
+      continue;
+    }
+
+    if (inString) {
+      // We are INSIDE a JSON string: escape raw newlines and control chars
+      if (char === '\n') {
+        sanitized += '\\n';
+      } else if (char === '\r') {
+        sanitized += '\\r';
+      } else if (char === '\t') {
+        sanitized += '\\t';
+      } else if (char.charCodeAt(0) < 0x20) {
+        sanitized += ' ';
+      } else {
+        sanitized += char;
+      }
+    } else {
+      // OUTSIDE strings: preserve whitespace, do not escape!
+      sanitized += char;
+    }
   }
+
+  // If truncated inside an unclosed string, close the string and the container
+  if (inString) {
+    sanitized += '"';
+    if (openChar === '[') {
+      const lastObjClose = sanitized.lastIndexOf('}');
+      if (lastObjClose > 0) {
+        sanitized = sanitized.substring(0, lastObjClose + 1) + ']';
+      } else if (!sanitized.trimEnd().endsWith(']')) {
+        sanitized += ']';
+      }
+    } else if (openChar === '{' && !sanitized.trimEnd().endsWith('}')) {
+      sanitized += '}';
+    }
+  }
+
+  // Remove trailing commas before closing braces/brackets
+  sanitized = sanitized.replace(/,\s*([\]}])/g, '$1');
 
   try {
-    return JSON.parse(repaired);
-  } catch (e) {
-    try {
-      return JSON.parse(jsonCandidate);
-    } catch (e2) {
-      console.warn('⚠️ cleanAndParseJson exception:', e2);
-      return null;
+    return JSON.parse(sanitized);
+  } catch (err: any) {
+    // If still failing, try alternative opening character if applicable
+    if (openingCharacter === '[' && source.indexOf('{') >= 0 && source.indexOf('{') < source.indexOf('[')) {
+      try {
+        const altObj = parseJsonValue(rawText, '{');
+        if (altObj) return altObj;
+      } catch {}
     }
+    console.warn('⚠️ cleanAndParseJson exception:', err?.message || err);
+    return null;
   }
 }
 
@@ -929,6 +1073,503 @@ Return ONLY a valid JSON array of objects containing EXACTLY ${targetCount} item
   }
 
   return [];
+}
+
+export interface SyllabusTopicItem {
+  unitNumber?: number;
+  unitName: string;
+  topicName: string;
+  subtopics?: string[];
+  prescribedWeightage?: number;
+  pageStart?: number;
+  pageEnd?: number;
+}
+
+export interface TopicQuestionCounts {
+  mcqCount: number;
+  veryShortCount: number;
+  shortCount: number;
+  descriptiveCount: number;
+}
+
+/**
+ * Extract Units, Topics, and Mark Weightages from Syllabus/Curriculum document using Gemini
+ */
+export async function extractSyllabusStructureWithAI(
+  syllabusSnippet: string,
+  className: string
+): Promise<SyllabusTopicItem[]> {
+  console.log(`📑 [SYLLABUS AI PARSER] Extracting Units, Topics & Weightages for "${className}"...`);
+
+  const prompt = `You are a senior Indian school curriculum and examination specialist (CBSE, ICSE, State Boards).
+Analyze the following textbook or syllabus document text for "${className}".
+Extract all Units, Chapters, and distinct Topics with their prescribed marks/weightages, subtopics, and page ranges (if mentioned).
+
+IMPORTANT INSTRUCTIONS:
+1. Identify the Table of Contents or Course Structure breakdown.
+2. Group topics under their respective Units or Chapters.
+3. If weightages/marks are explicitly specified (e.g. Unit 1: 25 marks, or Chapter 1: 6 marks), extract them under "prescribedWeightage".
+4. If weightages are not explicitly stated, assign a realistic weightage (marks) to each topic such that the total sum of all topics equals approximately 80 or 100 marks (standard Indian Board examination scale).
+5. Extract 5 to 15 key topics / chapters covering the syllabus.
+
+DOCUMENT TEXT EXCERPT:
+${syllabusSnippet.substring(0, 32000)}
+
+Return ONLY a valid JSON array of objects with the exact schema below, and NO markdown code wrappers:
+[
+  {
+    "unitNumber": 1,
+    "unitName": "Unit 1: Chemical Substances - Nature and Behaviour",
+    "topicName": "Chemical Reactions and Equations",
+    "subtopics": ["Chemical equation", "Balanced chemical equation", "Types of chemical reactions: combination, decomposition, displacement", "Oxidation and reduction"],
+    "prescribedWeightage": 8,
+    "pageStart": 1,
+    "pageEnd": 16
+  }
+]`;
+
+  const aiText = await callGemini36Api(prompt);
+  if (aiText) {
+    const parsed = parseJsonValue(aiText, '[');
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      console.log(`✅ [SYLLABUS AI PARSER] Successfully extracted ${parsed.length} curriculum topics for ${className}.`);
+      return parsed.map((item: any, idx: number) => ({
+        unitNumber: typeof item.unitNumber === 'number' ? item.unitNumber : idx + 1,
+        unitName: item.unitName || `Unit ${idx + 1}`,
+        topicName: item.topicName || item.title || `Topic ${idx + 1}`,
+        subtopics: Array.isArray(item.subtopics) ? item.subtopics.map(String) : [],
+        prescribedWeightage: typeof item.prescribedWeightage === 'number' ? item.prescribedWeightage : 5,
+        pageStart: typeof item.pageStart === 'number' ? item.pageStart : undefined,
+        pageEnd: typeof item.pageEnd === 'number' ? item.pageEnd : undefined
+      }));
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Generate questions for a specific topic partitioned by Indian Question Typology (MCQ, VSA, SA, Descriptive)
+ */
+export async function generateTopicQuestionsByType(
+  topicName: string,
+  unitName: string,
+  className: string,
+  textbookContent: string,
+  counts: TopicQuestionCounts
+): Promise<Question[]> {
+  const totalForTopic = (counts.mcqCount || 0) + (counts.veryShortCount || 0) + (counts.shortCount || 0) + (counts.descriptiveCount || 0);
+  if (totalForTopic <= 0) return [];
+
+  console.log(`🎯 [TOPIC GENERATOR] Generating ${totalForTopic} question(s) for topic "${topicName}" (${unitName || ''}):`);
+  console.log(`   └─ MCQs: ${counts.mcqCount || 0}, VSA: ${counts.veryShortCount || 0}, SA: ${counts.shortCount || 0}, Descriptive: ${counts.descriptiveCount || 0}`);
+
+  const snippetToUse = textbookContent ? textbookContent.substring(0, 14000) : '';
+
+  const prompt = `You are an expert Indian board examiner (CBSE, ICSE, State Boards) creating question paper items for ${className} on the topic "${topicName}" (${unitName || ''}).
+
+REQUIRED QUESTION TYPOLOGY BREAKDOWN:
+- EXACTLY ${counts.mcqCount || 0} Multiple Choice Question(s) (1 Mark each): 4 options labeled ["A) ...", "B) ...", "C) ...", "D) ..."], exactly one correct option, with the textbook quote as explanation.
+- EXACTLY ${counts.veryShortCount || 0} Very Short Answer Question(s) (2 Marks each): direct conceptual questions requiring a 2-point benchmark answer (1 mark per point).
+- EXACTLY ${counts.shortCount || 0} Short Answer Question(s) (3 Marks each): concept or numerical problem requiring a 3-point benchmark answer / steps (1 mark per point).
+- EXACTLY ${counts.descriptiveCount || 0} Long Answer / Descriptive Question(s) (5 Marks each): in-depth analytical question or derivation with an explicit step-by-step marking rubric (e.g. Statement: 1 Mark, Derivation: 2 Marks, Application: 2 Marks).
+
+KNOWLEDGE BASE CONTEXT FROM SYLLABUS / TEXTBOOK:
+${snippetToUse || `Topic: ${topicName}. Unit: ${unitName}. Core concepts of ${className}.`}
+
+CRITICAL GUARDRAILS:
+1. GROUNDED FACT CHECK: Questions and answers must STRICTLY reflect the provided textbook context. Do not invent outside facts.
+2. Return ONLY a valid JSON array of objects with the exact schema below and NO markdown formatting:
+[
+  ${counts.mcqCount > 0 ? `{
+    "type": "mcq",
+    "section": "Section A",
+    "marks": 1,
+    "text": "Which of the following describes...?",
+    "options": ["A) option 1", "B) option 2", "C) option 3", "D) option 4"],
+    "correctAnswer": "A) option 1",
+    "rubricKey": "Textbook citation: ..."
+  },` : ''}
+  ${counts.veryShortCount > 0 ? `{
+    "type": "vsa",
+    "section": "Section B",
+    "marks": 2,
+    "text": "State two properties of...",
+    "correctAnswer": "1. First property (1 Mark)\\n2. Second property (1 Mark)",
+    "rubricKey": "Award 1 mark for each valid property."
+  },` : ''}
+  ${counts.shortCount > 0 ? `{
+    "type": "sa",
+    "section": "Section C",
+    "marks": 3,
+    "text": "Explain why... and give an example.",
+    "correctAnswer": "1. Explanation of principle (2 Marks)\\n2. Example (1 Mark)",
+    "rubricKey": "2 marks for explanation, 1 mark for valid example."
+  },` : ''}
+  ${counts.descriptiveCount > 0 ? `{
+    "type": "descriptive",
+    "section": "Section D",
+    "marks": 5,
+    "text": "Describe the complete process of... with a detailed explanation.",
+    "correctAnswer": "Complete step-by-step model answer...",
+    "rubricKey": "Marking Scheme: Principle (1 Mark) + Procedure/Diagram (2 Marks) + Equations & Conclusion (2 Marks)."
+  }` : ''}
+]`;
+
+  const aiText = await callGemini36Api(prompt);
+  if (aiText) {
+    const parsed = parseJsonValue(aiText, '[');
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed.map((q: any, i: number) => ({
+        id: `topic-${topicName.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()}-${q.type || 'gen'}-${Date.now()}-${i}`,
+        type: q.type || (q.marks === 1 ? 'mcq' : q.marks === 2 ? 'vsa' : q.marks === 3 ? 'sa' : 'descriptive'),
+        section: q.section || (q.marks === 1 ? 'Section A' : q.marks === 2 ? 'Section B' : q.marks === 3 ? 'Section C' : 'Section D'),
+        marks: typeof q.marks === 'number' ? q.marks : (q.type === 'mcq' ? 1 : q.type === 'vsa' ? 2 : q.type === 'sa' ? 3 : 5),
+        text: q.text || q.question || '',
+        options: Array.isArray(q.options) ? q.options.map(String) : (q.type === 'mcq' ? ['A)', 'B)', 'C)', 'D)'] : undefined),
+        correctAnswer: q.correctAnswer || q.answerKey || '',
+        rubricKey: q.rubricKey || q.markingScheme || '',
+        stem: topicName
+      }));
+    }
+  }
+
+  return [];
+}
+
+export interface ChapterMetadata {
+  chapterNumber: number;
+  chapterTitle: string;
+  subtopics: string[];
+}
+
+/**
+ * Extract Chapter Title, Number, and Key Subtopics from Chapter PDF text using Gemini
+ */
+export async function extractChapterMetadataWithAI(
+  chapterTextSnippet: string,
+  fileName?: string,
+  suggestedTitle?: string,
+  suggestedNumber?: number
+): Promise<ChapterMetadata> {
+  console.log(`📖 [CHAPTER AI PARSER] Analyzing metadata & subtopics for: "${suggestedTitle || fileName || 'Chapter'}"...`);
+
+  const prompt = `You are a curriculum specialist and school educator.
+Analyze this excerpt from a school textbook chapter PDF (File: "${fileName || 'Chapter PDF'}").
+${suggestedTitle ? `Suggested Chapter Title: "${suggestedTitle}"` : ''}
+${suggestedNumber ? `Suggested Chapter Number: ${suggestedNumber}` : ''}
+
+Task:
+1. Identify the official Chapter Number (integer). If not mentioned, use ${suggestedNumber || 1}.
+2. Identify the official Chapter Title (e.g. "Chemical Reactions and Equations", "Light - Reflection and Refraction", "Life Processes"). Do NOT include "Chapter 1:" in the title.
+3. Extract an array of 3 to 10 distinct, core subtopics/concepts covered in this chapter (e.g. ["Chemical Equations", "Types of Chemical Reactions", "Combination Reactions", "Decomposition Reactions", "Displacement Reactions", "Oxidation and Reduction", "Corrosion and Rancidity"]).
+
+DOCUMENT EXCERPT:
+${chapterTextSnippet.substring(0, 24000)}
+
+Return ONLY a valid JSON object with the exact schema below, and NO markdown code block wrappers:
+{
+  "chapterNumber": 1,
+  "chapterTitle": "Chemical Reactions and Equations",
+  "subtopics": ["Subtopic 1", "Subtopic 2", "Subtopic 3"]
+}`;
+
+  const aiText = await callGemini36Api(prompt);
+  if (aiText) {
+    const parsed = parseJsonValue(aiText, '{');
+    if (parsed && (parsed.chapterTitle || parsed.title)) {
+      const extractedTitle = String(parsed.chapterTitle || parsed.title || '').trim();
+      const extractedNumber = typeof parsed.chapterNumber === 'number' && parsed.chapterNumber > 0 ? parsed.chapterNumber : (suggestedNumber || 1);
+      const subtopicsList = Array.isArray(parsed.subtopics) ? parsed.subtopics.map(String).filter((s: string) => s && s.trim().length > 0) : [];
+      return {
+        chapterNumber: extractedNumber,
+        chapterTitle: extractedTitle || suggestedTitle || fileName?.replace(/\.[^/.]+$/, '') || 'Chapter',
+        subtopics: subtopicsList
+      };
+    }
+  }
+
+  // Fallback
+  return {
+    chapterNumber: suggestedNumber || 1,
+    chapterTitle: suggestedTitle || fileName?.replace(/\.[^/.]+$/, '') || 'Chapter',
+    subtopics: []
+  };
+}
+
+export interface ChapterBlueprintItem {
+  chapterTitle: string;
+  chapterNumber?: number;
+  subtopics?: string[];
+  mcqCount: number;         // 1 Mark each
+  veryShortCount: number;   // 2 Marks each
+  shortCount: number;       // 3 Marks each
+  descriptiveCount: number; // 5 Marks each
+}
+
+export interface UnifiedExamParams {
+  examTitle: string;
+  className: string;
+  subjectName: string;
+  targetMarks: number;
+  language?: string;
+  difficulty?: string;
+  selectedChapters: string[];
+  selectedSubtopics: string[];
+  questionCounts: {
+    mcqCount: number;         // 1 Mark each
+    veryShortCount: number;   // 2 Marks each
+    shortCount: number;       // 3 Marks each
+    descriptiveCount: number; // 5 Marks each
+  };
+  blueprint?: ChapterBlueprintItem[];
+  textbookContext: string;
+}
+
+/**
+ * Generate Unified Question Paper directly from Selected Chapters/Subtopics and Question Counts
+ */
+export async function generateExamQuestionsUnified(params: UnifiedExamParams): Promise<Question[]> {
+  const {
+    examTitle,
+    className,
+    subjectName,
+    targetMarks,
+    language = 'English',
+    difficulty = 'Standard',
+    selectedChapters,
+    selectedSubtopics,
+    questionCounts,
+    blueprint,
+    textbookContext
+  } = params;
+
+  const totalQuestions = (questionCounts.mcqCount || 0) + (questionCounts.veryShortCount || 0) + (questionCounts.shortCount || 0) + (questionCounts.descriptiveCount || 0);
+  if (totalQuestions <= 0) return [];
+
+  console.log(`\n===============================================================`);
+  console.log(`🎯 [UNIFIED EXAM GENERATOR] Generating ${totalQuestions} Questions for "${examTitle}" (${targetMarks} Marks)`);
+  console.log(`   ├─ Class / Subject : ${className} / ${subjectName}`);
+  console.log(`   ├─ Chapters        : ${selectedChapters.join(', ') || 'All Chapters'}`);
+  console.log(`   ├─ Subtopics       : ${selectedSubtopics.join(', ') || 'All Subtopics'}`);
+  console.log(`   ├─ Typology        : MCQs=${questionCounts.mcqCount}, VSA=${questionCounts.veryShortCount}, SA=${questionCounts.shortCount}, Long=${questionCounts.descriptiveCount}`);
+  if (blueprint && blueprint.length > 0) {
+    console.log(`   └─ Blueprint Items : ${blueprint.length} chapter allocations configured`);
+  }
+  console.log(`===============================================================`);
+
+  const snippetToUse = textbookContext ? textbookContext.substring(0, 28000) : '';
+
+  const blueprintPromptSection = blueprint && blueprint.length > 0 ? `
+MANDATORY TOPIC-BY-TOPIC BLUEPRINT SPECIFICATION (YOU MUST MAP QUESTIONS STRICTLY TO THESE TOPICS & COUNTS):
+${blueprint.map((b, idx) => {
+  const bTotal = (b.mcqCount || 0) * 1 + (b.veryShortCount || 0) * 2 + (b.shortCount || 0) * 3 + (b.descriptiveCount || 0) * 5;
+  const subs = b.subtopics && b.subtopics.length > 0 ? b.subtopics.join(', ') : 'All chapter concepts';
+  return `[TOPIC ${idx + 1}: "${b.chapterTitle}"] (Topic Target: ${bTotal} Marks)
+  - Focus Subtopics: ${subs}
+  - Section A (MCQs 1m each): EXACTLY ${b.mcqCount || 0} question(s)
+  - Section B (Very Short 2m each): EXACTLY ${b.veryShortCount || 0} question(s)
+  - Section C (Short Answer 3m each): EXACTLY ${b.shortCount || 0} question(s)
+  - Section D (Long / Case 5m each): EXACTLY ${b.descriptiveCount || 0} question(s)`;
+}).join('\n\n')}
+` : '';
+
+  const prompt = `You are a premier senior school examination board setter (CBSE, ICSE, State Boards).
+Create a complete, rigorous, and balanced question paper for "${examTitle}" (${className}, Subject: ${subjectName}).
+Language: ${language}. Difficulty Level: ${difficulty}.
+Target Total Marks: ${targetMarks}.
+${blueprintPromptSection}
+SELECTED CHAPTERS & SYLLABUS SCOPE:
+Chapters: ${selectedChapters.length > 0 ? selectedChapters.join(', ') : 'All prescribed chapters'}
+Key Subtopics / Concepts to cover: ${selectedSubtopics.length > 0 ? selectedSubtopics.join(', ') : 'All core syllabus concepts'}
+
+KNOWLEDGE BASE CONTEXT FROM TEXTBOOK CHAPTERS:
+${snippetToUse || `Subject: ${subjectName}. Class: ${className}. Core syllabus principles and chapter concepts.`}
+
+REQUIRED QUESTION BREAKDOWN (YOU MUST GENERATE EXACTLY THIS MANY QUESTIONS):
+1. EXACTLY ${questionCounts.mcqCount || 0} Multiple Choice Questions (Section A - 1 Mark each):
+   - Provide 4 distinct options: ["A) ...", "B) ...", "C) ...", "D) ..."]
+   - Provide "correctAnswer" (e.g. "B) ...")
+   - Provide "rubricKey" citing the textbook principle.
+2. EXACTLY ${questionCounts.veryShortCount || 0} Very Short Answer Questions (Section B - 2 Marks each):
+   - Crisp 2-point direct conceptual or formula questions.
+   - Provide "correctAnswer" with 2 clear points (1 mark per point).
+3. EXACTLY ${questionCounts.shortCount || 0} Short Answer Questions (Section C - 3 Marks each):
+   - Conceptual explanation, numerical, or reasoning questions.
+   - Provide "correctAnswer" with 3 distinct points/steps (1 mark each).
+4. EXACTLY ${questionCounts.descriptiveCount || 0} Long Answer / Descriptive / Case Questions (Section D - 5 Marks each):
+   - Detailed comprehensive questions, derivations, or scenario applications.
+   - Provide complete step-by-step model answer and explicit marking scheme breakdown in "rubricKey".
+
+CRITICAL RULES:
+- Generate ALL ${totalQuestions} requested questions across all sections.
+- Keep each question's "rubricKey" and "correctAnswer" clear, accurate, and concise (avoid excessively verbose paragraphs).
+- Ensure all questions are numbered sequentially from 1 to ${totalQuestions}.
+- Section A questions have type "mcq" and section "Section A".
+- Section B questions have type "vsa" and section "Section B".
+- Section C questions have type "sa" and section "Section C".
+- Section D questions have type "descriptive" and section "Section D".
+- Output MUST be a valid JSON array starting with [ and ending with ].
+
+JSON Schema:
+[
+  {
+    "id": "q1",
+    "questionNo": "1",
+    "type": "mcq",
+    "section": "Section A",
+    "marks": 1,
+    "text": "Question text here",
+    "options": ["A) ...", "B) ...", "C) ...", "D) ..."],
+    "correctAnswer": "A) ...",
+    "rubricKey": "Explanation or citation",
+    "stem": "Chapter / Subtopic name"
+  }
+]`;
+
+  let aiText = '';
+  console.log(`\n🤖 [AI GATEWAY DISPATCH] Sending prompt to AI Gateway (Task: exam_generation)...`);
+  console.log(`   ├─ Target Questions : ${totalQuestions} (${targetMarks} Marks)`);
+  console.log(`   ├─ Prompt Length    : ${prompt.length} chars (~${Math.round(prompt.length / 4)} tokens)`);
+  console.log(`   └─ Blueprint Scope  : ${blueprint && blueprint.length > 0 ? `${blueprint.length} topic blueprint cards active` : 'General typology'}`);
+
+  try {
+    const gatewayRes = await aiGateway.execute({
+      taskType: 'exam_generation',
+      prompt,
+      targetLanguage: language,
+      maxOutputTokens: 32768,
+      temperature: 0.2
+    });
+    aiText = gatewayRes.text;
+  } catch (gwErr: any) {
+    console.warn('⚠️ [UNIFIED EXAM GENERATOR] Gateway exception, attempting direct fallback:', gwErr?.message || gwErr);
+    aiText = (await callGemini36Api(prompt)) || '';
+  }
+
+  if (!aiText) {
+    console.error('❌ [UNIFIED EXAM GENERATOR] AI provider returned no text.');
+    return [];
+  }
+
+  console.log(`📥 [AI GATEWAY COMPLETED] Received ${aiText.length} characters (~${Math.round(aiText.length / 4)} tokens). Parsing JSON questions...`);
+
+  // Try parsing as array first, or as object with questions
+  let parsed = parseJsonValue(aiText, '[');
+  if (!parsed || (Array.isArray(parsed) && parsed.length === 0)) {
+    parsed = parseJsonValue(aiText, '{');
+  }
+
+  let rawQuestions: any[] = [];
+  if (Array.isArray(parsed)) {
+    rawQuestions = parsed;
+  } else if (parsed && typeof parsed === 'object') {
+    if (Array.isArray(parsed.questions)) {
+      rawQuestions = parsed.questions;
+    } else if (Array.isArray(parsed.questionPaper)) {
+      rawQuestions = parsed.questionPaper;
+    } else if (Array.isArray(parsed.paper)) {
+      rawQuestions = parsed.paper;
+    } else if (Array.isArray(parsed.data)) {
+      rawQuestions = parsed.data;
+    } else {
+      for (const key of Object.keys(parsed)) {
+        if (Array.isArray(parsed[key])) {
+          rawQuestions.push(...parsed[key]);
+        }
+      }
+    }
+  }
+
+  // Fallback: regex search for JSON question objects if top-level parse yielded nothing
+  if (rawQuestions.length === 0) {
+    console.warn('⚠️ [UNIFIED EXAM GENERATOR] Standard JSON parsing yielded 0 questions. Trying regex block extractor...');
+    const objectMatches = aiText.match(/\{[^{}]*"(?:text|question)"\s*:[^{}]*\}/g);
+    if (objectMatches && objectMatches.length > 0) {
+      for (const objStr of objectMatches) {
+        try {
+          const qObj = JSON.parse(objStr);
+          if (qObj && (qObj.text || qObj.question)) rawQuestions.push(qObj);
+        } catch {}
+      }
+    }
+  }
+
+  // Strictly filter out any empty / placeholder question fragments
+  const validRawQuestions = rawQuestions.filter((q: any) => {
+    const text = String(q?.text || q?.question || q?.prompt || '').trim();
+    return text.length >= 6;
+  });
+
+  if (validRawQuestions.length === 0) {
+    console.error(`❌ [UNIFIED EXAM GENERATOR] No valid question items with text found in AI response! AI Output preview: ${aiText.substring(0, 500)}`);
+    return [];
+  }
+
+  const mcqsFound = validRawQuestions.filter((q: any) => q.type === 'mcq' || q.marks === 1).length;
+  const vsasFound = validRawQuestions.filter((q: any) => q.type === 'vsa' || q.marks === 2).length;
+  const sasFound = validRawQuestions.filter((q: any) => q.type === 'sa' || q.marks === 3).length;
+  const longsFound = validRawQuestions.filter((q: any) => q.type === 'descriptive' || (q.marks || 0) >= 4).length;
+
+  console.log(`📋 [AI EXTRACTION RESULT] Successfully parsed ${validRawQuestions.length} questions:`);
+  console.log(`   ├─ Section A (MCQs 1m) : ${mcqsFound}`);
+  console.log(`   ├─ Section B (VSA 2m)  : ${vsasFound}`);
+  console.log(`   ├─ Section C (SA 3m)   : ${sasFound}`);
+  console.log(`   └─ Section D (Long 5m) : ${longsFound}`);
+
+  let qNum = 1;
+  return validRawQuestions.map((q: any, idx: number) => {
+    const numStr = String(qNum++);
+    let marksVal = typeof q.marks === 'number' && q.marks > 0 ? q.marks : 0;
+    let qType = q.type ? String(q.type).toLowerCase() : '';
+
+    if (!marksVal) {
+      if (qType === 'mcq') marksVal = 1;
+      else if (qType === 'vsa' || qType === 'very_short') marksVal = 2;
+      else if (qType === 'sa' || qType === 'short') marksVal = 3;
+      else marksVal = 5;
+    }
+
+    if (!qType) {
+      if (marksVal === 1) qType = 'mcq';
+      else if (marksVal === 2) qType = 'vsa';
+      else if (marksVal === 3) qType = 'sa';
+      else qType = 'descriptive';
+    }
+
+    let sectionName = q.section || '';
+    if (!sectionName) {
+      if (marksVal === 1 || qType === 'mcq') sectionName = 'Section A';
+      else if (marksVal === 2 || qType === 'vsa') sectionName = 'Section B';
+      else if (marksVal === 3 || qType === 'sa') sectionName = 'Section C';
+      else sectionName = 'Section D';
+    }
+
+    let optionsList: string[] | undefined = undefined;
+    if (qType === 'mcq') {
+      if (Array.isArray(q.options) && q.options.length > 0) {
+        optionsList = q.options.map((opt: any) => String(opt));
+      } else if (q.options && typeof q.options === 'object') {
+        optionsList = Object.entries(q.options).map(([k, v]) => `${k}) ${v}`);
+      } else {
+        optionsList = ['A) Option 1', 'B) Option 2', 'C) Option 3', 'D) Option 4'];
+      }
+    }
+
+    return {
+      id: `unified-q-${Date.now()}-${idx + 1}`,
+      number: numStr,
+      questionNo: numStr,
+      type: qType,
+      section: sectionName,
+      marks: marksVal,
+      text: String(q.text || q.question || q.prompt || '').trim(),
+      options: optionsList,
+      correctAnswer: String(q.correctAnswer || q.answerKey || q.answer || q.correct_option || '').trim(),
+      rubricKey: String(q.rubricKey || q.markingScheme || q.explanation || q.solution || '').trim(),
+      stem: String(q.stem || q.chapter || (selectedChapters[0] || subjectName)).trim()
+    };
+  });
 }
 
 /**

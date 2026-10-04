@@ -340,15 +340,46 @@ router.get('/subjects', optionalAuth, async (req: AuthenticatedRequest, res: Res
     const { data, error } = await query;
     if (error) throw error;
 
-    const subjects = (data || []).map((subject: any) => ({
-      ...subject,
-      grade: subject.grade || '',
-      board: subject.board || '',
-      className: subject.class_name || [subject.grade, subject.name].filter(Boolean).join(' ') || subject.name,
-      description: subject.description || '',
-      branchId: subject.branch_id || null
-    }));
+    const subjectsMap = new Map<string, any>();
 
+    (data || []).forEach((subject: any) => {
+      subjectsMap.set(subject.name.toLowerCase(), {
+        ...subject,
+        grade: subject.grade || '',
+        board: subject.board || '',
+        className: subject.class_name || [subject.grade, subject.name].filter(Boolean).join(' ') || subject.name,
+        description: subject.description || '',
+        branchId: subject.branch_id || null
+      });
+    });
+
+    // Also union subjects from class_subjects so anything added under classes appears immediately
+    try {
+      let { data: csubs, error: csErr } = await supabase.from('class_subjects').select('*, classes(name, section)');
+      if (csErr) {
+        const fallback = await supabase.from('class_subjects').select('*');
+        csubs = fallback.data;
+      }
+      (csubs || []).forEach((cs: any) => {
+        const subName = cs.subject_name;
+        if (subName && !subjectsMap.has(subName.toLowerCase())) {
+          const classNameStr = cs.classes?.name || 'Grade 10';
+          subjectsMap.set(subName.toLowerCase(), {
+            id: cs.subject_id || cs.id,
+            name: subName,
+            grade: classNameStr,
+            board: '',
+            className: `${classNameStr} ${subName}`.trim(),
+            description: '',
+            branchId: null
+          });
+        }
+      });
+    } catch (csErr) {
+      console.warn('class_subjects union notice:', csErr);
+    }
+
+    const subjects = Array.from(subjectsMap.values());
     res.json({ success: true, subjects });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || 'Error fetching subjects' });
@@ -416,11 +447,21 @@ router.delete('/subjects/:id', optionalAuth, async (req: AuthenticatedRequest, r
 router.get('/classes/:classId/subjects', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { classId } = req.params;
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('class_subjects')
       .select('*, subjects(*)')
       .eq('class_id', classId)
       .order('subject_name');
+
+    if (error && error.message && error.message.includes('subject_id')) {
+      const fallbackRes = await supabase
+        .from('class_subjects')
+        .select('*')
+        .eq('class_id', classId)
+        .order('subject_name');
+      data = fallbackRes.data;
+      error = fallbackRes.error;
+    }
 
     if (error) throw error;
 
@@ -444,9 +485,40 @@ router.post('/classes/:classId/subjects', optionalAuth, async (req: Authenticate
   try {
     const { classId } = req.params;
     const subjectName = String(req.body.subjectName || '').trim();
-    const subjectId = req.body.subjectId || null;
+    let subjectId = req.body.subjectId || null;
 
     if (!subjectName) return res.status(400).json({ success: false, message: 'Subject name is required.' });
+
+    // Look up class to get class name (e.g., "Grade 10")
+    const { data: cls } = await supabase.from('classes').select('name').eq('id', classId).maybeSingle();
+    const classNameStr = cls?.name || 'Class';
+
+    if (!subjectId) {
+      // Find or create in public.subjects
+      const { data: existingSubj } = await supabase
+        .from('subjects')
+        .select('id')
+        .ilike('name', subjectName)
+        .maybeSingle();
+
+      if (existingSubj?.id) {
+        subjectId = existingSubj.id;
+      } else {
+        const newSubjId = `subject-${Date.now()}`;
+        const { data: createdSubj } = await supabase
+          .from('subjects')
+          .insert({
+            id: newSubjId,
+            name: subjectName,
+            grade: classNameStr,
+            class_name: classNameStr ? `${classNameStr} ${subjectName}` : subjectName,
+            created_at: new Date().toISOString()
+          })
+          .select()
+          .maybeSingle();
+        if (createdSubj?.id) subjectId = createdSubj.id;
+      }
+    }
 
     const newClassSubject = {
       id: `csub-${Date.now()}`,

@@ -112,6 +112,7 @@ app.delete('/api/clear', async (req, res) => {
       await supabase.from('branches').delete().neq('id', '');
       await supabase.from('admins').delete().neq('id', '');
       await supabase.from('corporate').delete().neq('id', '');
+      await supabase.from('curriculum_topics').delete().neq('id', '00000000-0000-0000-0000-000000000000');
       await supabase.from('textbook_embeddings').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     }
     console.log(`✅ [DATABASE RESET] All Supabase tables cleaned.`);
