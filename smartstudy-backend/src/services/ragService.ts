@@ -14,6 +14,7 @@ import {
   TopicQuestionCounts,
   extractChapterMetadataWithAI,
   generateExamQuestionsUnified,
+  generateQuestionImageOrDiagram,
   ChapterMetadata,
   UnifiedExamParams,
   ChapterBlueprintItem
@@ -36,6 +37,10 @@ export interface Question {
   stem?: string;
   hasVisual?: boolean;
   stimulus?: { page?: number; caption?: string; url?: string }[];
+  imageUrl?: string;
+  imagePrompt?: string;
+  diagramSvg?: string;
+  tableData?: string;
 }
 
 export interface EvaluationResult {
@@ -521,8 +526,17 @@ export async function ingestChapterDocument(
     chapterNumber
   );
 
+  const isCodeOrFilename = (str?: string): boolean => {
+    if (!str) return false;
+    const s = str.trim();
+    if (/\.pdf$/i.test(s)) return true;
+    if (/^([0-9]+\.\s*)?[a-z0-9_-]{1,14}$/i.test(s) && (/[0-9]/.test(s) || s.length <= 4) && !/\s/.test(s)) return true;
+    return false;
+  };
+
   const finalChapterNumber = chapterNumber || metadata.chapterNumber || 1;
-  const finalChapterTitle = chapterTitle?.trim() || metadata.chapterTitle || `Chapter ${finalChapterNumber}`;
+  const isInputCode = isCodeOrFilename(chapterTitle);
+  const finalChapterTitle = (!isInputCode && chapterTitle?.trim()) || metadata.chapterTitle || `Chapter ${finalChapterNumber}`;
   const finalSubtopics = metadata.subtopics.length > 0 ? metadata.subtopics : [`Key Concepts of ${finalChapterTitle}`];
 
   console.log(`📝 [CHAPTER METADATA RESOLVED]`);
@@ -748,6 +762,98 @@ export async function deleteSubjectChapter(chapterIdOrTitle: string, className?:
 }
 
 /**
+ * Update / Rename a chapter and synchronize all related vector chunks
+ */
+export async function updateSubjectChapter(
+  chapterIdOrTitle: string,
+  newTitle: string,
+  newNumber?: number,
+  className?: string
+): Promise<{ success: boolean; message: string; chapter?: CurriculumChapterRecord }> {
+  if (!process.env.SUPABASE_URL || process.env.SUPABASE_URL.includes('your-project')) {
+    return { success: true, message: 'Updated locally.' };
+  }
+  try {
+    let chapterRecord: any = null;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chapterIdOrTitle);
+    if (isUuid) {
+      const { data } = await supabase.from('curriculum_chapters').select('*').eq('id', chapterIdOrTitle).single();
+      chapterRecord = data;
+    }
+    if (!chapterRecord && className) {
+      const { data } = await supabase
+        .from('curriculum_chapters')
+        .select('*')
+        .eq('class_name', className)
+        .eq('chapter_title', chapterIdOrTitle)
+        .single();
+      chapterRecord = data;
+    }
+
+    const oldTitle = chapterRecord?.chapter_title || chapterIdOrTitle;
+    const targetClass = chapterRecord?.class_name || className;
+    const trimmedNewTitle = newTitle.trim();
+
+    // 1. Update curriculum_chapters table
+    const updatePayload: any = { chapter_title: trimmedNewTitle };
+    if (typeof newNumber === 'number' && newNumber > 0) {
+      updatePayload.chapter_number = newNumber;
+    }
+
+    let updatedChapter: any = null;
+    if (chapterRecord?.id) {
+      const { data, error } = await supabase
+        .from('curriculum_chapters')
+        .update(updatePayload)
+        .eq('id', chapterRecord.id)
+        .select('*')
+        .single();
+      if (error) throw error;
+      updatedChapter = data;
+    } else if (targetClass) {
+      const { data, error } = await supabase
+        .from('curriculum_chapters')
+        .update(updatePayload)
+        .eq('class_name', targetClass)
+        .eq('chapter_title', oldTitle)
+        .select('*')
+        .single();
+      if (error) throw error;
+      updatedChapter = data;
+    }
+
+    // 2. Synchronize textbook_embeddings
+    if (targetClass && oldTitle !== trimmedNewTitle) {
+      await supabase
+        .from('textbook_embeddings')
+        .update({ chapter_title: trimmedNewTitle, topic_name: trimmedNewTitle })
+        .eq('class_name', targetClass)
+        .eq('chapter_title', oldTitle);
+    }
+
+    // 3. Update memory cache if present
+    if (targetClass) {
+      const oldCacheKey = `${targetClass}:::${chapterRecord?.subject_name || 'General'}:::${oldTitle}`;
+      const newCacheKey = `${targetClass}:::${chapterRecord?.subject_name || 'General'}:::${trimmedNewTitle}`;
+      if (cachedTextbookText[oldCacheKey]) {
+        cachedTextbookText[newCacheKey] = cachedTextbookText[oldCacheKey];
+        delete cachedTextbookText[oldCacheKey];
+      }
+    }
+
+    console.log(`✏️ Successfully updated chapter "${oldTitle}" -> "${trimmedNewTitle}".`);
+    return {
+      success: true,
+      message: `Chapter updated to "${trimmedNewTitle}" successfully.`,
+      chapter: updatedChapter || undefined
+    };
+  } catch (err: any) {
+    console.warn('⚠️ updateSubjectChapter notice:', err?.message || err);
+    return { success: false, message: err?.message || 'Failed to update chapter' };
+  }
+}
+
+/**
  * Generate Unified Exam Paper strictly matching teacher's requested question breakdown and selected subtopics
  */
 export async function generateUnifiedExamPaper(params: {
@@ -758,10 +864,16 @@ export async function generateUnifiedExamPaper(params: {
   chapterTitles?: string[];
   subtopics?: string[];
   questionCounts: {
-    mcqCount: number;         // 1m
-    veryShortCount: number;   // 2m
-    shortCount: number;       // 3m
-    descriptiveCount: number; // 5m
+    mcqCount: number;
+    veryShortCount: number;
+    shortCount: number;
+    descriptiveCount: number;
+  };
+  marksConfig?: {
+    mcq?: number;
+    vsa?: number;
+    sa?: number;
+    long?: number;
   };
   blueprint?: ChapterBlueprintItem[];
   language?: string;
@@ -775,10 +887,16 @@ export async function generateUnifiedExamPaper(params: {
     chapterTitles = [],
     subtopics = [],
     questionCounts,
+    marksConfig,
     blueprint = [],
     language = 'English',
     difficulty = 'Standard'
   } = params;
+
+  const mcqMarks = Number(marksConfig?.mcq) || 1;
+  const vsaMarks = Number(marksConfig?.vsa) || 2;
+  const saMarks = Number(marksConfig?.sa) || 3;
+  const longMarks = Number(marksConfig?.long) || 5;
 
   // If blueprint provided, derive effective questionCounts, chapters, and subtopics
   let effectiveQuestionCounts = questionCounts;
@@ -820,6 +938,7 @@ export async function generateUnifiedExamPaper(params: {
   console.log(`🎯 [RAG UNIFIED EXAM PIPELINE] Initiating Paper Generation`);
   console.log(`   ├─ Exam Title   : "${examTitle}" | Target Marks: ${targetMarks}`);
   console.log(`   ├─ Class / Cohort: ${className} | Subject: ${subjectName}`);
+  console.log(`   ├─ Typology Marks: MCQ=${mcqMarks}m, VSA=${vsaMarks}m, SA=${saMarks}m, Long=${longMarks}m`);
   console.log(`   ├─ Chapters (${effectiveChapterTitles.length}): ${effectiveChapterTitles.length > 0 ? effectiveChapterTitles.join(', ') : 'All available'}`);
   console.log(`   ├─ Subtopics (${effectiveSubtopics.length}): ${effectiveSubtopics.length > 0 ? effectiveSubtopics.slice(0, 5).join(', ') + (effectiveSubtopics.length > 5 ? ` (+${effectiveSubtopics.length - 5} more)` : '') : 'All available'}`);
   if (blueprint && blueprint.length > 0) {
@@ -885,15 +1004,16 @@ export async function generateUnifiedExamPaper(params: {
     selectedChapters: effectiveChapterTitles,
     selectedSubtopics: effectiveSubtopics,
     questionCounts: effectiveQuestionCounts,
+    marksConfig: { mcq: mcqMarks, vsa: vsaMarks, sa: saMarks, long: longMarks },
     blueprint,
     textbookContext: combinedContext
   });
 
   // Partition by Section
-  const sectionA = questions.filter(q => q.section === 'Section A' || q.type === 'mcq' || q.marks === 1);
-  const sectionB = questions.filter(q => q.section === 'Section B' || q.type === 'vsa' || q.marks === 2);
-  const sectionC = questions.filter(q => q.section === 'Section C' || q.type === 'sa' || q.marks === 3);
-  const sectionD = questions.filter(q => q.section === 'Section D' || q.type === 'descriptive' || (q.marks || 0) >= 4);
+  const sectionA = questions.filter(q => q.section === 'Section A' || q.type === 'mcq' || q.marks === mcqMarks);
+  const sectionB = questions.filter(q => q.section === 'Section B' || q.type === 'vsa' || q.marks === vsaMarks);
+  const sectionC = questions.filter(q => q.section === 'Section C' || q.type === 'sa' || q.marks === saMarks);
+  const sectionD = questions.filter(q => q.section === 'Section D' || q.type === 'descriptive' || (q.marks || 0) >= longMarks);
 
   // Sequential numbering
   let qNum = 1;
@@ -909,20 +1029,45 @@ export async function generateUnifiedExamPaper(params: {
     });
   };
 
-  const finalSectionA = renumber(sectionA, 'Section A (Multiple Choice Questions - 1 Mark each)');
-  const finalSectionB = renumber(sectionB, 'Section B (Very Short Answer Questions - 2 Marks each)');
-  const finalSectionC = renumber(sectionC, 'Section C (Short Answer Questions - 3 Marks each)');
-  const finalSectionD = renumber(sectionD, 'Section D (Long Answer / Descriptive Questions - 5 Marks each)');
+  const finalSectionA = renumber(sectionA, `Section A (Multiple Choice Questions - ${mcqMarks} Mark${mcqMarks === 1 ? '' : 's'} each)`);
+  const finalSectionB = renumber(sectionB, `Section B (Very Short Answer Questions - ${vsaMarks} Mark${vsaMarks === 1 ? '' : 's'} each)`);
+  const finalSectionC = renumber(sectionC, `Section C (Short Answer Questions - ${saMarks} Mark${saMarks === 1 ? '' : 's'} each)`);
+  const finalSectionD = renumber(sectionD, `Section D (Long Answer / Descriptive Questions - ${longMarks} Mark${longMarks === 1 ? '' : 's'} each)`);
 
   const finalQuestions = [...finalSectionA, ...finalSectionB, ...finalSectionC, ...finalSectionD];
   const calculatedTotalMarks = finalQuestions.reduce((acc, q) => acc + (q.marks || 0), 0);
 
+  // Auto-generate diagrams for questions that require visuals
+  const visualQuestions = finalQuestions.filter(q => (q.hasVisual || q.imagePrompt) && !q.imageUrl && !q.diagramSvg);
+  if (visualQuestions.length > 0) {
+    console.log(`\n🎨 [RAG EXAM PIPELINE] Auto-generating diagrams for ${visualQuestions.length} visual question(s)...`);
+    await Promise.allSettled(
+      visualQuestions.slice(0, 4).map(async (q) => {
+        try {
+          const diagramRes = await generateQuestionImageOrDiagram(
+            q.imagePrompt || q.text,
+            q.text,
+            subjectName
+          );
+          if (diagramRes.imageUrl) {
+            q.imageUrl = diagramRes.imageUrl;
+          } else if (diagramRes.diagramSvg) {
+            q.diagramSvg = diagramRes.diagramSvg;
+          }
+          console.log(`   ✅ Visual diagram generated for Q${q.questionNo}: [${diagramRes.type}]`);
+        } catch (err: any) {
+          console.warn(`   ⚠️ Could not auto-generate visual for Q${q.questionNo}:`, err?.message || err);
+        }
+      })
+    );
+  }
+
   console.log(`\n===============================================================`);
   console.log(`📋 [QUESTION PAPER ASSEMBLED] "${examTitle}"`);
-  console.log(`   ├─ Section A (MCQs 1m) : ${finalSectionA.length} questions = ${finalSectionA.length * 1} Marks`);
-  console.log(`   ├─ Section B (VSA 2m)  : ${finalSectionB.length} questions = ${finalSectionB.length * 2} Marks`);
-  console.log(`   ├─ Section C (SA 3m)   : ${finalSectionC.length} questions = ${finalSectionC.length * 3} Marks`);
-  console.log(`   ├─ Section D (Long 5m) : ${finalSectionD.length} questions = ${finalSectionD.length * 5} Marks`);
+  console.log(`   ├─ Section A (MCQs ${mcqMarks}m) : ${finalSectionA.length} questions = ${finalSectionA.length * mcqMarks} Marks`);
+  console.log(`   ├─ Section B (VSA ${vsaMarks}m)  : ${finalSectionB.length} questions = ${finalSectionB.length * vsaMarks} Marks`);
+  console.log(`   ├─ Section C (SA ${saMarks}m)   : ${finalSectionC.length} questions = ${finalSectionC.length * saMarks} Marks`);
+  console.log(`   ├─ Section D (Long ${longMarks}m) : ${finalSectionD.length} questions = ${finalSectionD.length * longMarks} Marks`);
   console.log(`   ├─ TOTAL QUESTIONS     : ${finalQuestions.length} questions`);
   console.log(`   └─ TOTAL MARKS         : ${calculatedTotalMarks} / ${targetMarks} Marks ${calculatedTotalMarks === targetMarks ? '✅ [PERFECT MATCH]' : '⚠️'}`);
   console.log(`---------------------------------------------------------------`);
@@ -1262,6 +1407,31 @@ export async function generateBlueprintExamPaper(
 
   const finalQuestions = [...finalSectionA, ...finalSectionB, ...finalSectionC, ...finalSectionD];
   const calculatedTotalMarks = finalQuestions.reduce((acc, q) => acc + (q.marks || 0), 0);
+
+  // Auto-generate diagrams for blueprint questions that require visuals
+  const visualQuestions = finalQuestions.filter(q => (q.hasVisual || q.imagePrompt) && !q.imageUrl && !q.diagramSvg);
+  if (visualQuestions.length > 0) {
+    console.log(`\n🎨 [BLUEPRINT EXAM] Auto-generating diagrams for ${visualQuestions.length} visual question(s)...`);
+    await Promise.allSettled(
+      visualQuestions.slice(0, 4).map(async (q) => {
+        try {
+          const diagramRes = await generateQuestionImageOrDiagram(
+            q.imagePrompt || q.text,
+            q.text,
+            className
+          );
+          if (diagramRes.imageUrl) {
+            q.imageUrl = diagramRes.imageUrl;
+          } else if (diagramRes.diagramSvg) {
+            q.diagramSvg = diagramRes.diagramSvg;
+          }
+          console.log(`   ✅ Visual diagram generated for blueprint Q${q.questionNo}: [${diagramRes.type}]`);
+        } catch (err: any) {
+          console.warn(`   ⚠️ Could not auto-generate visual for blueprint Q${q.questionNo}:`, err?.message || err);
+        }
+      })
+    );
+  }
 
   console.log(`✅ [BLUEPRINT EXAM READY] Generated ${finalQuestions.length} total questions, total marks: ${calculatedTotalMarks}.`);
 
