@@ -34,13 +34,30 @@ export async function performOcrPages(
   }
 
   const prompt = `Perform high-precision OCR on this handwritten ${subject || ''} answer-sheet page in ${languageName}.
-Transcribe all printed text and student handwriting line by line.
+Transcribe all printed text, student handwriting, tables, and diagrams line by line.
 
-CRITICAL ANSWER-BOX & HANDWRITING TRANSCRIBING RULES:
-- For questions with answer boxes [ ], checkboxes, letter boxes, or fill-in blank lines:
-  - If a student wrote a letter or word inside the box/line, transcribe it as: [Box: <handwritten_text>] (e.g. [Box: B], [Box: H]).
-  - If the box/line is COMPLETELY BLANK or UNANSWERED (nothing written inside), transcribe it explicitly as: [Box: EMPTY].
-- Do NOT guess, invent, or infer answers. Transcribe ONLY what is physically handwritten inside the designated answer box/space.`;
+CRITICAL TRANSCRIBING RULES:
+1. ANSWER BOXES, TICKS & OBJECTIVE MARKINGS:
+   - For questions with answer boxes [ ], checkboxes, letter boxes, or fill-in blank lines:
+     - If a student wrote a letter or word inside the box/line, transcribe it as: [Box: <handwritten_text>] (e.g. [Box: B], [Box: H], [Box: Photosynthesis]).
+     - If a student marked a tick mark (✓) or checkmark, transcribe: [Box: ✓] or [Tick: <option>].
+     - If a student circled an option or letter, transcribe: [Circled: <option>].
+     - If a student crossed out / scribbled over an answer and wrote another, transcribe: [Crossed-out: <old>] [Box: <new>].
+     - If the box/line is COMPLETELY BLANK or UNANSWERED (nothing written inside), transcribe it explicitly as: [Box: EMPTY].
+   - Do NOT guess, invent, or infer answers. Transcribe ONLY what is physically written on the page.
+
+2. TABLES & DATA GRIDS:
+   - If any answer or question contains a table or grid (e.g. difference tables, experimental data, matrices, truth tables):
+     - Transcribe it faithfully as a GitHub Markdown table (| Column 1 | Column 2 |).
+     - Preserve every row, column header, and student handwritten cell entry.
+     - If any cell is blank, transcribe it as | [EMPTY] |.
+     - Never flatten tables into unstructured sentences.
+
+3. DIAGRAMS, FIGURES & DRAWINGS:
+   - If the student drew a diagram, graph, circuit, ray diagram, flow chart, chemical structure, or geometric figure:
+     - Explicitly transcribe it with the tag:
+       [Diagram / Drawing: <type of drawing, labeled components, student annotations, axes names/units, arrows, measured values>]
+     - Do NOT omit drawings or treat them as blank space!`;
   const pages = await Promise.all(buffers.map((buffer, index) => callGemini36Api(prompt, buffer, mimeTypes[index] || 'image/jpeg', 3, getConfiguredGeminiModel())));
   if (pages.some((page) => !page?.trim())) throw new Error('OCR providers could not transcribe every answer-sheet page.');
   return {
@@ -74,12 +91,20 @@ export async function performOcr(
   if (buffer) {
     try {
       const prompt = `Perform high-precision optical character recognition (OCR) on the provided handwritten answer sheet image in ${languageName} script.
-Transcribe all legible handwritten or printed text line by line.
+Transcribe all legible handwritten or printed text, tables, and diagrams line by line.
 
-CRITICAL ANSWER-BOX TRANSCRIBING RULES:
-- For answer boxes [ ], checkboxes, or fill-in blank lines:
-  - If handwriting is present inside the box/line, transcribe: [Box: <handwritten_text>] (e.g. [Box: B], [Box: H]).
-  - If the box/line is EMPTY or BLANK, transcribe: [Box: EMPTY].`;
+CRITICAL TRANSCRIBING RULES:
+1. ANSWER BOXES, TICKS & OBJECTIVE MARKINGS:
+   - For answer boxes [ ], checkboxes, or fill-in blank lines:
+     - If handwriting is present, transcribe: [Box: <handwritten_text>] (e.g. [Box: B], [Box: Photosynthesis]).
+     - If a tick mark (✓) or checkmark is present: [Box: ✓] or [Tick: <option>].
+     - If circled: [Circled: <option>].
+     - If crossed-out: [Crossed-out: <old>] [Box: <new>].
+     - If the box/line is EMPTY or BLANK: [Box: EMPTY].
+2. TABLES & GRIDS:
+   - Transcribe tables into Markdown tables (| Col 1 | Col 2 |), writing | [EMPTY] | for blank cells.
+3. DIAGRAMS & DRAWINGS:
+   - Transcribe drawings as [Diagram / Drawing: <description of drawing, labels, arrows, annotations, axes>].`;
 
       let transcribed: string | null = null;
       if (ocrModel === 'sarvam') {

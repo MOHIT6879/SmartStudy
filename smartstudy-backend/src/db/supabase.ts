@@ -19,14 +19,15 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 export async function uploadImageToSupabase(
   fileBuffer: Buffer,
   fileName: string,
-  mimeType: string = 'image/jpeg'
+  mimeType: string = 'image/jpeg',
+  folder: string = 'submissions',
+  bucketName: string = 'student-submissions'
 ): Promise<string> {
   const base64DataUrl = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
   
   try {
-    const bucketName = 'student-submissions';
     const cleanFileName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    const filePath = `submissions/${Date.now()}-${cleanFileName}`;
+    const filePath = `${folder}/${Date.now()}-${cleanFileName}`;
 
     const { data, error } = await supabase.storage
       .from(bucketName)

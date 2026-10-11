@@ -1942,6 +1942,121 @@ p {
     letter-spacing: 0.12em !important;
     page-break-inside: avoid !important;
   }
+
+  .question-markdown-table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    margin: 6px 0 !important;
+    page-break-inside: avoid !important;
+  }
+
+  .question-markdown-table th,
+  .question-markdown-table td {
+    border: 1px solid #000000 !important;
+    padding: 4px 8px !important;
+    font-size: 9pt !important;
+  }
+
+  .question-markdown-table th {
+    background: #EEEEEE !important;
+    font-weight: bold !important;
+  }
+
+  .question-diagram-figure {
+    max-width: 340px !important;
+    page-break-inside: avoid !important;
+    border: 1px solid #333333 !important;
+    padding: 6px !important;
+    margin: 6px auto !important;
+    display: block !important;
+  }
+
+  .question-diagram-figure svg {
+    width: 100% !important;
+    max-width: 320px !important;
+    min-height: 160px !important;
+    display: block !important;
+  }
+
+  .print-letterhead-banner {
+    display: block !important;
+    width: 100% !important;
+    max-height: 120px !important;
+    object-fit: contain !important;
+    margin-bottom: 8px !important;
+  }
+}
+
+/* Question Markdown Table (Screen) */
+.question-markdown-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.65rem 0;
+  font-size: 0.825rem;
+  border-radius: 0.375rem;
+  overflow: hidden;
+}
+
+.question-markdown-table th,
+.question-markdown-table td {
+  border: 1px solid #CBD5E1;
+  padding: 0.4rem 0.75rem;
+  text-align: left;
+}
+
+.question-markdown-table th {
+  background: #F1F5F9;
+  font-weight: 700;
+  color: #0F172A;
+}
+
+/* Question Diagram and Visual Figure (Screen) */
+.question-diagram-figure {
+  margin: 0.75rem auto;
+  padding: 0.75rem;
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  border-radius: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  max-width: 500px;
+  width: 100%;
+  box-sizing: border-box;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.question-diagram-figure img {
+  max-width: 100%;
+  max-height: 300px;
+  object-fit: contain;
+  border-radius: 0.375rem;
+  display: block;
+}
+
+.question-diagram-figure svg {
+  width: 100% !important;
+  max-width: 460px !important;
+  min-height: 220px !important;
+  height: auto !important;
+  display: block !important;
+}
+
+.question-figure-caption {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #64748B;
+  margin-top: 0.35rem;
+  text-align: center;
+}
+
+.print-letterhead-banner {
+  display: block;
+  width: 100%;
+  max-height: 140px;
+  object-fit: contain;
+  margin-bottom: 0.75rem;
 }
 
 /* Screen styles for authentic question paper sheet */

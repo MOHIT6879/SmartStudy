@@ -7,7 +7,8 @@ import {
   CheckCircle2, 
   Clock, 
   Sparkles,
-  Layers
+  Layers,
+  Pencil
 } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
 
@@ -231,6 +232,38 @@ export default function KnowledgeBase() {
     }
   };
 
+  // 5b. Handle Rename / Edit Chapter
+  const handleEditChapter = async (chapter: CurriculumChapter) => {
+    const currentTitle = chapter.chapter_title;
+    const newTitle = window.prompt(`Rename Chapter ${chapter.chapter_number} to actual title:`, currentTitle);
+    if (!newTitle || !newTitle.trim() || newTitle.trim() === currentTitle) {
+      return;
+    }
+
+    try {
+      const idOrTitle = chapter.id || currentTitle;
+      const res = await fetch(`${API_BASE_URL}/api/rag/chapters/${encodeURIComponent(idOrTitle)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chapterTitle: newTitle.trim(),
+          chapterNumber: chapter.chapter_number,
+          className: activeClassName
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setChapters((prev) => prev.map((c) => (c.id === chapter.id || c.chapter_title === currentTitle) ? { ...c, chapter_title: newTitle.trim() } : c));
+        alert(`✅ Chapter ${chapter.chapter_number} renamed to "${newTitle.trim()}".`);
+      } else {
+        alert(`Could not rename chapter: ${data.message}`);
+      }
+    } catch (err: any) {
+      console.error('Rename chapter error:', err);
+      alert('Error connecting to update endpoint.');
+    }
+  };
+
   const totalChunks = chapters.reduce((acc, c) => acc + (c.chunk_count || 0), 0);
 
   return (
@@ -338,10 +371,12 @@ export default function KnowledgeBase() {
                     if (e.target.files && e.target.files.length > 0) {
                       const file = e.target.files[0];
                       setUploadedFiles([file]);
-                      // Clean default title from filename
+                      // Only set chapter title if filename looks like a human-readable title (has spaces and > 5 chars), otherwise leave blank so AI extracts the real chapter title
                       if (!chapterTitleInput) {
-                        const cleanName = file.name.replace(/\.pdf$/i, '').replace(/^[0-9\s_-]+/, '').replace(/[_-]/g, ' ');
-                        setChapterTitleInput(cleanName);
+                        const cleanName = file.name.replace(/\.pdf$/i, '').replace(/^[0-9\s_-]+/, '').replace(/[_-]/g, ' ').trim();
+                        if (cleanName.includes(' ') && cleanName.length > 5) {
+                          setChapterTitleInput(cleanName);
+                        }
                       }
                     }
                   }}
@@ -484,8 +519,18 @@ export default function KnowledgeBase() {
                           )}
                           <button
                             type="button"
+                            className="btn btn-outline btn-sm text-blue-600 hover:bg-blue-50"
+                            style={{ padding: '0.2rem 0.55rem', fontSize: '0.75rem', borderColor: '#BFDBFE', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                            onClick={() => handleEditChapter(ch)}
+                            title="Rename this chapter"
+                          >
+                            <Pencil className="size-3.5" />
+                            <span>Rename</span>
+                          </button>
+                          <button
+                            type="button"
                             className="btn btn-outline btn-sm text-red-600 hover:bg-red-50"
-                            style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem', borderColor: '#FECACA' }}
+                            style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem', borderColor: '#FECACA', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
                             onClick={() => handleDeleteChapter(ch)}
                             title="Delete this chapter"
                           >

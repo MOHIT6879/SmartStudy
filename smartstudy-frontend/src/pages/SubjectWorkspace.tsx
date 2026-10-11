@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, FileText, FileStack, Send, Plus, Upload, X, CheckCircle2, ChevronRight } from 'lucide-react';
+import { ArrowLeft, FileText, FileStack, Send, Plus, Upload, X, CheckCircle2, ChevronRight, Sparkles, Edit3 } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
 import ReviewQueue from './ReviewQueue';
 
@@ -47,7 +47,12 @@ export default function SubjectWorkspace() {
 
   const fetchAssignments = () => {
     if (!classSubjectId) return;
-    fetch(`${API_BASE_URL}/api/assignments?classSubjectId=${encodeURIComponent(classSubjectId)}`)
+    const qParams = new URLSearchParams({
+      classSubjectId,
+      ...(subjectName ? { subject: subjectName } : {}),
+      ...(classId ? { classId } : {})
+    });
+    fetch(`${API_BASE_URL}/api/assignments?${qParams.toString()}`)
       .then((res) => res.json())
       .then((data) => {
         if (data.success && Array.isArray(data.assignments)) setAssignments(data.assignments);
@@ -245,6 +250,18 @@ export default function SubjectWorkspace() {
           <h1>{subjectName || 'Subject'}</h1>
           <p>Deploy question papers with an answer key, then scan and grade student scripts against them</p>
         </div>
+        <div className="page-top-bar-actions">
+          <button 
+            type="button"
+            className="btn btn-primary"
+            onClick={() => navigate(`/generator?classId=${classId}&classSubjectId=${classSubjectId}&subject=${encodeURIComponent(subjectName)}&className=${encodeURIComponent(className)}`)}
+            title="Generate question paper for this subject"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+          >
+            <Sparkles className="size-4" />
+            <span>Generate Paper with AI</span>
+          </button>
+        </div>
       </header>
 
       <div className="page-container">
@@ -365,34 +382,102 @@ export default function SubjectWorkspace() {
             </div>
 
             <div className="m-card">
-              <div className="m-card-header">
-                <h3 className="m-card-title">Deployed papers</h3>
+              <div className="m-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 className="m-card-title">Subject Question Papers ({assignments.length})</h3>
+                <button
+                  type="button"
+                  className="btn btn-outline btn-sm"
+                  onClick={() => navigate(`/generator?classId=${classId}&classSubjectId=${classSubjectId}&subject=${encodeURIComponent(subjectName)}&className=${encodeURIComponent(className)}`)}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem' }}
+                >
+                  <Plus className="size-3.5" />
+                  <span>New Paper</span>
+                </button>
               </div>
               {assignments.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: '#64748B' }}>
-                  <Plus className="size-8 text-slate-300 mx-auto" style={{ margin: '0 auto 0.5rem auto' }} />
-                  <p style={{ fontWeight: 600, color: '#334155', margin: 0 }}>No papers deployed yet.</p>
+                  <FileText className="size-8 text-slate-300 mx-auto" style={{ margin: '0 auto 0.5rem auto' }} />
+                  <p style={{ fontWeight: 600, color: '#334155', margin: 0 }}>No question papers created or deployed yet.</p>
                   <p style={{ fontSize: '0.8125rem', color: '#94A3B8', marginTop: '0.25rem' }}>
-                    Deploy one on the left, then open it here to scan scripts and view student results.
+                    Generate an aligned board paper using AI, or deploy your scanned question paper on the left.
                   </p>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => navigate(`/generator?classId=${classId}&classSubjectId=${classSubjectId}&subject=${encodeURIComponent(subjectName)}&className=${encodeURIComponent(className)}`)}
+                    style={{ marginTop: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
+                  >
+                    <Sparkles className="size-3.5" />
+                    <span>Generate Question Paper with AI</span>
+                  </button>
                 </div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {assignments.map((a) => (
-                    <button
-                      key={a.id}
-                      onClick={() => navigate(`/papers/${a.id}?classId=${classId}&classSubjectId=${classSubjectId}`)}
-                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', padding: '0.75rem', background: '#F8FAFC', borderRadius: '0.5rem', border: '1px solid #E2E8F0', cursor: 'pointer', textAlign: 'left', width: '100%' }}
-                    >
-                      <div>
-                        <div style={{ fontWeight: 700, fontSize: '0.9375rem', color: '#111827' }}>{a.title}</div>
-                        <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.2rem' }}>
-                          {(a.questions || []).length} question(s) · {a.answerKeyText ? 'Answer key attached' : 'No answer key'} · {a.status || 'dispatched'}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                  {assignments.map((a) => {
+                    const qCount = (a.questions || []).length;
+                    const marks = (a.questions || []).reduce((s: number, q: any) => s + (Number(q.marks) || 1), 0);
+                    const isDispatched = a.status === 'dispatched';
+
+                    return (
+                      <div
+                        key={a.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '0.75rem',
+                          padding: '0.75rem 1rem',
+                          background: '#FFFFFF',
+                          borderRadius: '0.5rem',
+                          border: '1px solid #E2E8F0',
+                          boxShadow: '0 1px 2px rgba(0,0,0,0.03)'
+                        }}
+                      >
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            <div style={{ fontWeight: 700, fontSize: '0.925rem', color: '#111827' }}>{a.title}</div>
+                            <span style={{ 
+                              fontSize: '0.68rem', 
+                              fontWeight: 700, 
+                              padding: '0.1rem 0.45rem', 
+                              borderRadius: '0.25rem',
+                              background: isDispatched ? '#DCFCE7' : '#FEF3C7',
+                              color: isDispatched ? '#166534' : '#92400E',
+                              border: isDispatched ? '1px solid #BBF7D0' : '1px solid #FDE68A'
+                            }}>
+                              {isDispatched ? 'Dispatched' : 'Saved Draft'}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.25rem' }}>
+                            {qCount} question(s) • {marks} Total Marks • {a.answerKeyText ? 'Answer key attached' : 'Standard rubric'}
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
+                            title="Edit or review in Question Paper Generator"
+                            onClick={() => navigate(`/generator?classId=${classId}&classSubjectId=${classSubjectId}&subject=${encodeURIComponent(subjectName)}&paperId=${a.id}`)}
+                            style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                          >
+                            <Edit3 className="size-3 text-blue-600" />
+                            <span>Edit Paper</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-sm"
+                            title="Open paper details and grading queue"
+                            onClick={() => navigate(`/papers/${a.id}?classId=${classId}&classSubjectId=${classSubjectId}`)}
+                            style={{ padding: '0.35rem 0.65rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                          >
+                            <span>Open & Grade</span>
+                            <ChevronRight className="size-3.5" />
+                          </button>
                         </div>
                       </div>
-                      <ChevronRight className="size-4 text-slate-400" />
-                    </button>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>

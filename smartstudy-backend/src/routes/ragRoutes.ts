@@ -14,10 +14,18 @@ import {
   ingestChapterDocument,
   getSubjectChapters,
   deleteSubjectChapter,
+  updateSubjectChapter,
   generateUnifiedExamPaper
 } from '../services/ragService.js';
 import { expandPdfFilesToImages } from '../services/pdfRasterService.js';
-import { extractQuestionsFromImage, attachStimulusImages, callGemini36Api, getConfiguredGeminiModel } from '../services/aiService.js';
+import { 
+  extractQuestionsFromImage, 
+  attachStimulusImages, 
+  callGemini36Api, 
+  getConfiguredGeminiModel,
+  generateSingleQuestionReplacement,
+  generateQuestionImageOrDiagram
+} from '../services/aiService.js';
 
 const router = Router();
 
@@ -253,6 +261,36 @@ router.delete('/rag/chapters/:id', optionalAuth, async (req: AuthenticatedReques
   }
 });
 
+router.patch('/rag/chapters/:id', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = String(req.params.id || '');
+    const { chapterTitle, chapterNumber, className } = req.body;
+    if (!id || !chapterTitle || !chapterTitle.trim()) {
+      return res.status(400).json({ success: false, message: 'Chapter ID and new chapterTitle are required.' });
+    }
+
+    const result = await updateSubjectChapter(id, chapterTitle.trim(), chapterNumber, className);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Error updating chapter' });
+  }
+});
+
+router.put('/rag/chapters/:id', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = String(req.params.id || '');
+    const { chapterTitle, chapterNumber, className } = req.body;
+    if (!id || !chapterTitle || !chapterTitle.trim()) {
+      return res.status(400).json({ success: false, message: 'Chapter ID and new chapterTitle are required.' });
+    }
+
+    const result = await updateSubjectChapter(id, chapterTitle.trim(), chapterNumber, className);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Error updating chapter' });
+  }
+});
+
 // -------------------------------------------------------------
 // 6. Curriculum Topics Hierarchy (Fetch & Update)
 // -------------------------------------------------------------
@@ -445,6 +483,16 @@ router.post('/rag/generate-exam', uploadDisk.any(), optionalAuth, async (req: Au
     }
     console.log(`===============================================================`);
 
+    let marksConfig = req.body.marksConfig || {
+      mcq: Number(req.body.mcqMarks || 1),
+      vsa: Number(req.body.vsaMarks || 2),
+      sa: Number(req.body.saMarks || 3),
+      long: Number(req.body.longMarks || 5)
+    };
+    if (typeof marksConfig === 'string') {
+      try { marksConfig = JSON.parse(marksConfig); } catch (e) {}
+    }
+
     const result = await generateUnifiedExamPaper({
       examTitle: examTitle || `${className} Examination Paper`,
       targetMarks: targetMarksNum,
@@ -457,6 +505,12 @@ router.post('/rag/generate-exam', uploadDisk.any(), optionalAuth, async (req: Au
         veryShortCount: Number(questionCounts.veryShortCount) || 0,
         shortCount: Number(questionCounts.shortCount) || 0,
         descriptiveCount: Number(questionCounts.descriptiveCount) || 0
+      },
+      marksConfig: {
+        mcq: Number(marksConfig?.mcq) || 1,
+        vsa: Number(marksConfig?.vsa) || 2,
+        sa: Number(marksConfig?.sa) || 3,
+        long: Number(marksConfig?.long) || 5
       },
       blueprint,
       language: language || 'English',
@@ -477,6 +531,69 @@ router.post('/rag/generate-exam', uploadDisk.any(), optionalAuth, async (req: Au
     console.error(err);
     console.log(`===============================================================\n`);
     res.status(500).json({ success: false, message: err?.message || 'Error generating examination paper' });
+  }
+});
+
+// -------------------------------------------------------------
+// 10. Generate Question Diagram or Image (Imagen-3 / Vector SVG)
+// -------------------------------------------------------------
+router.post('/rag/generate-question-image', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { prompt, questionText, subject } = req.body;
+    if (!prompt && !questionText) {
+      return res.status(400).json({ success: false, message: 'Diagram prompt or question text is required.' });
+    }
+
+    const result = await generateQuestionImageOrDiagram(
+      prompt || questionText,
+      questionText || prompt || '',
+      subject || 'Science'
+    );
+
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    console.error('❌ Error generating question image/diagram:', err?.message || err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to generate diagram or image' });
+  }
+});
+
+// -------------------------------------------------------------
+// 11. Single Question AI Regeneration (Focused In-Place Swap)
+// -------------------------------------------------------------
+router.post('/rag/regenerate-question', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const {
+      subjectName,
+      className,
+      chapterTitle,
+      subtopics,
+      questionType,
+      marks,
+      currentQuestionText,
+      language,
+      difficulty
+    } = req.body;
+
+    const replacement = await generateSingleQuestionReplacement({
+      subjectName: subjectName || 'General',
+      className: className || 'Grade 10',
+      chapterTitle: chapterTitle || '',
+      subtopics: subtopics || [],
+      questionType: questionType || 'sa',
+      marks: Number(marks) || 3,
+      currentQuestionText,
+      language: language || 'English',
+      difficulty: difficulty || 'Standard'
+    });
+
+    if (!replacement) {
+      return res.status(500).json({ success: false, message: 'AI model could not formulate a replacement question. Please try again.' });
+    }
+
+    res.json({ success: true, question: replacement });
+  } catch (err: any) {
+    console.error('❌ Error regenerating question:', err?.message || err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to regenerate question' });
   }
 });
 

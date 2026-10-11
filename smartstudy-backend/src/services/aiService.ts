@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { callSarvamChatApi, performSarvamVisionOcr, performSarvamVisionOcrChunks, supportsSarvamDocumentLanguage } from './sarvamService.js';
 import { aiGateway } from './aiGateway/index.js';
+import { uploadImageToSupabase } from '../db/supabase.js';
 dotenv.config();
 
 export interface QuestionStimulus {
@@ -28,6 +29,10 @@ export interface Question {
   stem?: string;
   hasVisual?: boolean;
   stimulus?: QuestionStimulus[];
+  imageUrl?: string;
+  imagePrompt?: string;
+  diagramSvg?: string;
+  tableData?: string;
 }
 
 export interface QuestionEvaluation {
@@ -54,8 +59,8 @@ export interface VisionEvaluationResult {
   questionEvaluations?: QuestionEvaluation[];
 }
 
-const getGeminiKey = () => process.env.GEMINI_API_KEY || '';
-export const getConfiguredGeminiModel = () => process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+const getGeminiKey = () => (process.env.GEMINI_API_KEY || '').trim();
+export const getConfiguredGeminiModel = () => (process.env.GEMINI_MODEL || 'gemini-3.6-flash').trim();
 
 /**
  * Google Gemini 3.6 API Call (Vision + Text Prompts)
@@ -64,8 +69,9 @@ export async function callGemini36Api(
   prompt: string,
   imageInput?: Buffer[] | Buffer | null,
   mimeType: string = 'image/jpeg',
-  maxRetries = 3,
-  modelNameOverride?: string
+  maxRetries = 4,
+  modelNameOverride?: string,
+  timeoutMs: number = 90000
 ): Promise<string | null> {
   if (modelNameOverride === 'sarvam') {
     if (imageInput) {
@@ -97,11 +103,18 @@ export async function callGemini36Api(
   const modelName = modelNameOverride || getConfiguredGeminiModel();
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => {
+      controller.abort(new Error(`Gemini API request timed out after ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+
     try {
-      console.log(`🤖 [GEMINI 3.6] Requesting completion (${modelName}) [Attempt ${attempt}/${maxRetries}]...`);
+      console.log(`🤖 [GEMINI 3.6] Requesting completion (${modelName}) [Attempt ${attempt}/${maxRetries}, Timeout ${Math.round(timeoutMs / 1000)}s]...`);
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify({
           contents: [{ parts }],
           generationConfig: {
@@ -111,7 +124,8 @@ export async function callGemini36Api(
               thinkingBudget: 0
             }
           }
-        })
+        }),
+        signal: controller.signal
       });
 
       if (res.ok) {
@@ -125,17 +139,28 @@ export async function callGemini36Api(
         if (responseText) {
           console.log(`✅ [GEMINI 3.6] Successful response from ${modelName}`);
           return responseText;
+        } else {
+          console.warn(`⚠️ [GEMINI 3.6] Empty response text received (finishReason: ${finishReason || 'unknown'}).`);
         }
       } else {
         const errBody = await res.text();
         console.warn(`⚠️ [GEMINI 3.6] API notice (${res.status}): ${errBody.substring(0, 300)}`);
-        if ((res.status === 429 || res.status === 503) && attempt < maxRetries) {
-          const waitMs = attempt * 2000;
+        if ((res.status === 429 || res.status >= 500) && attempt < maxRetries) {
+          const waitMs = attempt * 2000 + Math.floor(Math.random() * 500);
+          console.log(`⏳ [GEMINI 3.6] Retrying after status ${res.status} in ${waitMs}ms...`);
           await new Promise(r => setTimeout(r, waitMs));
         }
       }
-    } catch (err) {
-      console.warn(`⚠️ [GEMINI 3.6] Exception:`, err);
+    } catch (err: any) {
+      const errDetail = err?.cause?.message || err?.message || String(err);
+      console.warn(`⚠️ [GEMINI 3.6] Network/Timeout Exception [Attempt ${attempt}/${maxRetries}]: ${errDetail}`);
+      if (attempt < maxRetries) {
+        const waitMs = attempt * 1500 + Math.floor(Math.random() * 1000);
+        console.log(`⏳ [GEMINI 3.6] Retrying after network/timeout in ${waitMs}ms...`);
+        await new Promise(r => setTimeout(r, waitMs));
+      }
+    } finally {
+      clearTimeout(timeoutHandle);
     }
   }
 
@@ -409,8 +434,16 @@ function parseJsonValue(rawText: string, openingCharacter?: '{' | '['): any {
 /**
  * Safely parse JSON objects from LLM responses.
  */
-function cleanAndParseJson(rawText: string): any {
+export function cleanAndParseJson(rawText: string): any {
   return parseJsonValue(rawText, '{');
+}
+
+/**
+ * Safely parse JSON arrays from LLM responses.
+ */
+export function cleanAndParseJsonArray(rawText: string): any[] {
+  const result = parseJsonValue(rawText, '[');
+  return Array.isArray(result) ? result : [];
 }
 
 function canonicalQuestionKey(value: unknown): string | null {
@@ -446,35 +479,36 @@ export function validateEvaluationPayload(rawPayload: any, assignedQuestions: Qu
 
   const expectedCount = assignedQuestions.length || rawPayload.questionEvaluations.length;
   if (rawPayload.questionEvaluations.length !== expectedCount) {
-    throw new Error(`AI evaluation returned ${ rawPayload.questionEvaluations.length } items but expected ${ expectedCount }.`);
+    console.warn(`⚠️ [EVALUATION] AI evaluation returned ${rawPayload.questionEvaluations.length} items (expected ${expectedCount}). Missing questions will be credited as unattempted.`);
   }
 
   const seenKeys = new Set<string>();
+  const validatedList: any[] = [];
   for (const item of rawPayload.questionEvaluations) {
-    if (!item || typeof item !== 'object') {
-      throw new Error('AI evaluation contains a non-object question entry.');
-    }
+    if (!item || typeof item !== 'object') continue;
     const key = canonicalQuestionKey(item.questionNo ?? item.questionNumber ?? item.id ?? item.number);
-    if (!key) {
-      throw new Error('AI evaluation question item is missing a valid questionNo.');
-    }
-    if (seenKeys.has(key)) {
-      throw new Error(`AI evaluation contains duplicate question key: ${ key }.`);
-    }
+    if (!key) continue;
+    if (seenKeys.has(key)) continue; // ignore duplicate keys instead of crashing
     seenKeys.add(key);
 
-    if (!Number.isFinite(Number(item.scorePercent)) || ![0, 25, 50, 75, 100].includes(Number(item.scorePercent))) {
-      throw new Error(`AI evaluation question ${ key } has invalid scorePercent: ${ item.scorePercent }.`);
+    let numericScore = Number(item.scorePercent);
+    if (!Number.isFinite(numericScore)) {
+      numericScore = 0;
+    } else {
+      numericScore = Math.max(0, Math.min(100, Math.round(numericScore)));
     }
+    item.scorePercent = numericScore;
 
     if (typeof item.reasoning !== 'string' || !item.reasoning.trim()) {
-      throw new Error(`AI evaluation question ${ key } is missing reasoning.`);
+      item.reasoning = (typeof item.feedback === 'string' && item.feedback.trim())
+        ? item.feedback.trim()
+        : (numericScore > 0 ? 'Evaluated against question benchmark criteria.' : 'No relevant answer detected.');
     }
     if (typeof item.feedback !== 'string' || !item.feedback.trim()) {
-      throw new Error(`AI evaluation question ${ key } is missing feedback.`);
+      item.feedback = item.reasoning || (numericScore >= 90 ? 'Correct response.' : 'Review question key concepts.');
     }
     if (typeof item.studentAnswerSnippet !== 'string') {
-      throw new Error(`AI evaluation question ${ key } is missing a valid studentAnswerSnippet.`);
+      item.studentAnswerSnippet = 'No answer detected in the scanned paper.';
     }
   }
 
@@ -625,17 +659,33 @@ CRITICAL ANTI-HALLUCINATION & EVALUATION RULES:
      - You MUST set "studentAnswerSnippet": "No answer written (blank box)"
      - You MUST set "scorePercent": 0
      - You MUST set "reasoning": "Question was left blank by the student."
-2. ACCURATE & RIGOROUS SCORING:
+
+2. COMPREHENSIVE MULTIPLE CHOICE (MCQ) & OBJECTIVE RULES (HANDLE ALL FORMATS):
+   - Option Letter Matching: Treat letter selections as case-insensitive ('a' == 'A', 'b' == 'B', etc.).
+   - Option Boxes & Brackets: Formats like [Box: B], [B], (B), B. are all recognized as Option B.
+   - Ticks, Checks & Circled Marks: If a student marked a tick (✓), checkmark, or circled a specific option letter/box (e.g. [Box: ✓] next to C, or "Tick against B"), award 100 if that option is correct.
+   - Option Text Written (Letter Omitted): If a student wrote the correct answer text verbatim or semantically (e.g., student wrote "Mitochondria" when Option C is "C) Mitochondria" or benchmark says "Mitochondria"), award scorePercent: 100 even if the letter "C" was omitted!
+   - Option Letter + Text: If a student wrote both "B) Photosynthesis" or "B. Mitochondria", award 100 if it matches the benchmark.
+   - Roman Numerals / Numbers: Automatically match (i), (ii), (iii), (iv) or 1, 2, 3, 4 to corresponding options (a), (b), (c), (d) or A, B, C, D.
+   - Crossed-out / Corrected Answers: If a student crossed out or scribbled over an answer (e.g. crossed out A and wrote C), evaluate ONLY the final uncrossed answer (C).
+   - Conflicting Selections: If a student selected multiple conflicting options for a single-choice question without crossing one out (e.g. marked both A and D), award scorePercent: 0 with explicit reasoning ("Student selected conflicting options without crossing one out").
+   - Multi-Select Questions: When a question requires multiple correct options (e.g. "Select two"), award proportional credit (e.g. 50% for 1 of 2 correct, 100% for all correct) provided no incorrect option was chosen.
+   - Blank / Unanswered MCQ: If no option was chosen or marked, award scorePercent: 0 with reasoning "Question was left blank by the student."
+   - Incorrect Option Selected: If a student selected an incorrect option (e.g. chose H when key is E), award scorePercent: 0 with explicit reasoning: "Student selected Option H, but the correct answer is E."
+
+3. TABLES, GRIDS, DIAGRAMS & DRAWINGS:
+   - Tables / Data Grids: When student answers are in Markdown tables (| Col 1 | Col 2 |), evaluate corresponding cell data against the benchmark criteria.
+   - Diagrams, Circuits & Figures: If a question asks to draw or label a diagram/graph/circuit, inspect the [Diagram / Drawing: ...] OCR description and page image. Award full or partial credit based on presence of essential components, correct orientation, arrows, and required labels.
+
+4. ACCURATE SCORING:
    - Evaluate whether the student's actual handwritten answer (in "studentAnswerSnippet") correctly and accurately answers the question asked and satisfies the Benchmark Key.
-   - If a question asks for a date/time ("¿Cuándo...") and the student writes a location ("Cerca de Valencia"), award scorePercent: 0 with explicit reasoning ("Student provided a location instead of the required time/date").
-   - If a question has multiple choice letter options (A-H) and the student wrote a different letter (e.g. wrote 'H' when key is 'E'), award scorePercent: 0 with explicit reasoning ("Student selected letter H, but the correct answer is E").
-   - If the student left the question blank or wrote an unrelated answer, award scorePercent: 0.
-   - Use ONLY 0, 25, 50, 75, or 100 for scorePercent.
-   - Award 100 when all essential marking points are accurately present.
-3. OUTPUT FORMAT:
-  - Return valid JSON with fields: excelledAreas, knowledgeGaps, feedback, socraticHint, questionEvaluations.
-  - questionEvaluations array items require: questionNo, benchmarkKey, studentAnswerSnippet, scorePercent, reasoning, feedback.
-  - benchmarkKey MUST be the exact teacher-key entry used for this question, or the extracted paper key only when no teacher-key entry matches.
+   - Award scorePercent between 0 and 100 proportional to the essential marking points satisfied.
+   - Award 100 when all essential marking points are accurately present, even if wording, notation, or order differs from benchmark.
+
+5. OUTPUT FORMAT:
+   - Return valid JSON with fields: excelledAreas, knowledgeGaps, feedback, socraticHint, questionEvaluations.
+   - questionEvaluations array items require: questionNo, benchmarkKey, studentAnswerSnippet, scorePercent, reasoning, feedback.
+   - benchmarkKey MUST be the exact teacher-key entry used for this question, or the extracted paper key only when no teacher-key entry matches.
    - questionNo must match the paper reference shown in the question list exactly.`;
 }
 
@@ -664,7 +714,7 @@ export function normalizeQuestionEvaluations(
     const evaluation = lookup.get(expectedKey) || source[index] || {};
     let numericScore = Number(evaluation.scorePercent);
     let scorePercent = Number.isFinite(numericScore)
-      ? Math.round(Math.min(100, Math.max(0, numericScore)) / 25) * 25
+      ? Math.max(0, Math.min(100, Math.round(numericScore)))
       : 0;
 
     // The evaluator's benchmark is authoritative because it has resolved the
@@ -736,7 +786,7 @@ function sarvamEvaluationSchema(questionCount: number): Record<string, unknown> 
               properties: {
                 questionNo: { type: 'string' },
                 studentAnswerSnippet: { type: 'string' },
-                scorePercent: { type: 'number', enum: [0, 25, 50, 75, 100] },
+                scorePercent: { type: 'number' },
                 reasoning: { type: 'string' },
                 feedback: { type: 'string' }
               },
@@ -809,7 +859,7 @@ YOUR GRADING INSTRUCTIONS:
   - Partial Credit (50%): About half of the essential concepts are correct.
   - Minimal Credit (25%): A relevant attempt contains one correct concept but is substantially incomplete.
    - Unrelated / No Credit (0%): Student wrote about a completely different question or topic -> award 0% with an explicit reasoning note.
-  - Use ONLY 0, 25, 50, 75, or 100 for scorePercent.
+  - Return a scorePercent between 0 and 100 representing percentage credit earned (e.g. 0, 25, 50, 75, 80, 100).
   - First identify the distinct essential marking points in the benchmark key, then check each point against the student's answer.
   - Award 100% when every essential marking point is present and correct, even if wording, order, spelling, grammar, or notation style differs from the benchmark.
   - Do not reduce marks for repetition or extra correct explanation. Reduce marks only for a missing essential point or a factual contradiction.
@@ -895,7 +945,7 @@ Return ONLY a valid JSON object matching this structure:
   OCR TRANSCRIPTION:
   ${existingOcrText}
 
-  For every assigned question, identify the essential marking points in its benchmark and check each point against the OCR. Award 100 when all essential points are semantically present and correct, regardless of wording, order, spelling, grammar, or notation style. Do not penalize repetition or extra correct explanation. Reduce marks only for missing essential points or factual contradictions. Use only 0, 25, 50, 75, or 100 for scorePercent. Award credit only for evidence in the OCR transcription. Unanswered or unrelated questions receive 0. Keep snippets, reasoning, and feedback concise. Do not repeat question text, benchmark keys, or the full OCR. Return exactly ${assignedQuestions.length} questionEvaluations.`;
+  For every assigned question, identify the essential marking points in its benchmark and check each point against the OCR. Award 100 when all essential points are semantically present and correct, regardless of wording, order, spelling, grammar, or notation style. Do not penalize repetition or extra correct explanation. Reduce marks only for missing essential points or factual contradictions. Return scorePercent between 0 and 100. Award credit only for evidence in the OCR transcription. Unanswered or unrelated questions receive 0. Keep snippets, reasoning, and feedback concise. Do not repeat question text, benchmark keys, or the full OCR. Return exactly ${assignedQuestions.length} questionEvaluations.`;
         aiText = await callSarvamChatApi(evaluationPrompt, 2, {
           reasoningEffort: null,
           maxTokens: 4096,
@@ -965,7 +1015,7 @@ Return ONLY a valid JSON object matching this structure:
     });
 
     const totalMarks = ordered.reduce((total, evaluation) => total + (evaluation.marks || 5), 0);
-    const normalizedScore = ordered.reduce((total, evaluation) => total + evaluation.earnedMarks, 0);
+    const normalizedScore = Math.round(ordered.reduce((total, evaluation) => total + evaluation.earnedMarks, 0) * 100) / 100;
     const excelledAreas = batchResults.flatMap((entry) => Array.isArray(entry.parsed.excelledAreas) ? entry.parsed.excelledAreas : []);
     const knowledgeGaps = batchResults.flatMap((entry) => Array.isArray(entry.parsed.knowledgeGaps) ? entry.parsed.knowledgeGaps : []);
     console.log(`📊 [EVALUATION PARSED] Score: ${normalizedScore}/${totalMarks}, Questions: ${ordered.length}, Excelled: [${excelledAreas.join(', ')}], Gaps: [${knowledgeGaps.join(', ')}]`);
@@ -1243,6 +1293,14 @@ export interface ChapterMetadata {
   subtopics: string[];
 }
 
+function isLikelyFilenameOrCode(str?: string): boolean {
+  if (!str) return false;
+  const s = str.trim();
+  if (/\.pdf$/i.test(s)) return true;
+  if (/^([0-9]+\.\s*)?[a-z0-9_-]{1,14}$/i.test(s) && (/[0-9]/.test(s) || s.length <= 4) && !/\s/.test(s)) return true;
+  return false;
+}
+
 /**
  * Extract Chapter Title, Number, and Key Subtopics from Chapter PDF text using Gemini
  */
@@ -1252,16 +1310,18 @@ export async function extractChapterMetadataWithAI(
   suggestedTitle?: string,
   suggestedNumber?: number
 ): Promise<ChapterMetadata> {
-  console.log(`📖 [CHAPTER AI PARSER] Analyzing metadata & subtopics for: "${suggestedTitle || fileName || 'Chapter'}"...`);
+  const cleanSuggestedTitle = isLikelyFilenameOrCode(suggestedTitle) ? undefined : suggestedTitle;
+  console.log(`📖 [CHAPTER AI PARSER] Analyzing metadata & subtopics for: "${cleanSuggestedTitle || fileName || 'Chapter'}"...`);
 
   const prompt = `You are a curriculum specialist and school educator.
 Analyze this excerpt from a school textbook chapter PDF (File: "${fileName || 'Chapter PDF'}").
-${suggestedTitle ? `Suggested Chapter Title: "${suggestedTitle}"` : ''}
+${cleanSuggestedTitle ? `Suggested Chapter Title: "${cleanSuggestedTitle}"` : ''}
 ${suggestedNumber ? `Suggested Chapter Number: ${suggestedNumber}` : ''}
 
 Task:
 1. Identify the official Chapter Number (integer). If not mentioned, use ${suggestedNumber || 1}.
-2. Identify the official Chapter Title (e.g. "Chemical Reactions and Equations", "Light - Reflection and Refraction", "Life Processes"). Do NOT include "Chapter 1:" in the title.
+2. Identify the official human-readable Chapter Title (e.g. "The Ever-Evolving World of Science", "Exploring Substances: Acidic, Basic, and Neutral", "Electricity: Circuits and their Components", "Chemical Reactions and Equations").
+CRITICAL: Do NOT return raw PDF codes or file names like "gecu101", "ch01", "doc1.pdf". Extract the actual textbook chapter heading. Do NOT include "Chapter 1:" in the title.
 3. Extract an array of 3 to 10 distinct, core subtopics/concepts covered in this chapter (e.g. ["Chemical Equations", "Types of Chemical Reactions", "Combination Reactions", "Decomposition Reactions", "Displacement Reactions", "Oxidation and Reduction", "Corrosion and Rancidity"]).
 
 DOCUMENT EXCERPT:
@@ -1279,11 +1339,12 @@ Return ONLY a valid JSON object with the exact schema below, and NO markdown cod
     const parsed = parseJsonValue(aiText, '{');
     if (parsed && (parsed.chapterTitle || parsed.title)) {
       const extractedTitle = String(parsed.chapterTitle || parsed.title || '').trim();
+      const validTitle = !isLikelyFilenameOrCode(extractedTitle) ? extractedTitle : undefined;
       const extractedNumber = typeof parsed.chapterNumber === 'number' && parsed.chapterNumber > 0 ? parsed.chapterNumber : (suggestedNumber || 1);
       const subtopicsList = Array.isArray(parsed.subtopics) ? parsed.subtopics.map(String).filter((s: string) => s && s.trim().length > 0) : [];
       return {
         chapterNumber: extractedNumber,
-        chapterTitle: extractedTitle || suggestedTitle || fileName?.replace(/\.[^/.]+$/, '') || 'Chapter',
+        chapterTitle: validTitle || cleanSuggestedTitle || 'Chapter ' + extractedNumber,
         subtopics: subtopicsList
       };
     }
@@ -1292,7 +1353,7 @@ Return ONLY a valid JSON object with the exact schema below, and NO markdown cod
   // Fallback
   return {
     chapterNumber: suggestedNumber || 1,
-    chapterTitle: suggestedTitle || fileName?.replace(/\.[^/.]+$/, '') || 'Chapter',
+    chapterTitle: cleanSuggestedTitle || `Chapter ${suggestedNumber || 1}`,
     subtopics: []
   };
 }
@@ -1317,10 +1378,16 @@ export interface UnifiedExamParams {
   selectedChapters: string[];
   selectedSubtopics: string[];
   questionCounts: {
-    mcqCount: number;         // 1 Mark each
-    veryShortCount: number;   // 2 Marks each
-    shortCount: number;       // 3 Marks each
-    descriptiveCount: number; // 5 Marks each
+    mcqCount: number;
+    veryShortCount: number;
+    shortCount: number;
+    descriptiveCount: number;
+  };
+  marksConfig?: {
+    mcq?: number;
+    vsa?: number;
+    sa?: number;
+    long?: number;
   };
   blueprint?: ChapterBlueprintItem[];
   textbookContext: string;
@@ -1340,9 +1407,15 @@ export async function generateExamQuestionsUnified(params: UnifiedExamParams): P
     selectedChapters,
     selectedSubtopics,
     questionCounts,
+    marksConfig,
     blueprint,
     textbookContext
   } = params;
+
+  const mcqMarks = Number(marksConfig?.mcq) || 1;
+  const vsaMarks = Number(marksConfig?.vsa) || 2;
+  const saMarks = Number(marksConfig?.sa) || 3;
+  const longMarks = Number(marksConfig?.long) || 5;
 
   const totalQuestions = (questionCounts.mcqCount || 0) + (questionCounts.veryShortCount || 0) + (questionCounts.shortCount || 0) + (questionCounts.descriptiveCount || 0);
   if (totalQuestions <= 0) return [];
@@ -1352,7 +1425,7 @@ export async function generateExamQuestionsUnified(params: UnifiedExamParams): P
   console.log(`   ├─ Class / Subject : ${className} / ${subjectName}`);
   console.log(`   ├─ Chapters        : ${selectedChapters.join(', ') || 'All Chapters'}`);
   console.log(`   ├─ Subtopics       : ${selectedSubtopics.join(', ') || 'All Subtopics'}`);
-  console.log(`   ├─ Typology        : MCQs=${questionCounts.mcqCount}, VSA=${questionCounts.veryShortCount}, SA=${questionCounts.shortCount}, Long=${questionCounts.descriptiveCount}`);
+  console.log(`   ├─ Typology        : MCQs=${questionCounts.mcqCount} (${mcqMarks}m), VSA=${questionCounts.veryShortCount} (${vsaMarks}m), SA=${questionCounts.shortCount} (${saMarks}m), Long=${questionCounts.descriptiveCount} (${longMarks}m)`);
   if (blueprint && blueprint.length > 0) {
     console.log(`   └─ Blueprint Items : ${blueprint.length} chapter allocations configured`);
   }
@@ -1363,14 +1436,14 @@ export async function generateExamQuestionsUnified(params: UnifiedExamParams): P
   const blueprintPromptSection = blueprint && blueprint.length > 0 ? `
 MANDATORY TOPIC-BY-TOPIC BLUEPRINT SPECIFICATION (YOU MUST MAP QUESTIONS STRICTLY TO THESE TOPICS & COUNTS):
 ${blueprint.map((b, idx) => {
-  const bTotal = (b.mcqCount || 0) * 1 + (b.veryShortCount || 0) * 2 + (b.shortCount || 0) * 3 + (b.descriptiveCount || 0) * 5;
+  const bTotal = (b.mcqCount || 0) * mcqMarks + (b.veryShortCount || 0) * vsaMarks + (b.shortCount || 0) * saMarks + (b.descriptiveCount || 0) * longMarks;
   const subs = b.subtopics && b.subtopics.length > 0 ? b.subtopics.join(', ') : 'All chapter concepts';
   return `[TOPIC ${idx + 1}: "${b.chapterTitle}"] (Topic Target: ${bTotal} Marks)
   - Focus Subtopics: ${subs}
-  - Section A (MCQs 1m each): EXACTLY ${b.mcqCount || 0} question(s)
-  - Section B (Very Short 2m each): EXACTLY ${b.veryShortCount || 0} question(s)
-  - Section C (Short Answer 3m each): EXACTLY ${b.shortCount || 0} question(s)
-  - Section D (Long / Case 5m each): EXACTLY ${b.descriptiveCount || 0} question(s)`;
+  - Section A (MCQs ${mcqMarks}m each): EXACTLY ${b.mcqCount || 0} question(s)
+  - Section B (Very Short ${vsaMarks}m each): EXACTLY ${b.veryShortCount || 0} question(s)
+  - Section C (Short Answer ${saMarks}m each): EXACTLY ${b.shortCount || 0} question(s)
+  - Section D (Long / Case ${longMarks}m each): EXACTLY ${b.descriptiveCount || 0} question(s)`;
 }).join('\n\n')}
 ` : '';
 
@@ -1387,19 +1460,23 @@ KNOWLEDGE BASE CONTEXT FROM TEXTBOOK CHAPTERS:
 ${snippetToUse || `Subject: ${subjectName}. Class: ${className}. Core syllabus principles and chapter concepts.`}
 
 REQUIRED QUESTION BREAKDOWN (YOU MUST GENERATE EXACTLY THIS MANY QUESTIONS):
-1. EXACTLY ${questionCounts.mcqCount || 0} Multiple Choice Questions (Section A - 1 Mark each):
+1. EXACTLY ${questionCounts.mcqCount || 0} Multiple Choice Questions (Section A - ${mcqMarks} Mark${mcqMarks === 1 ? '' : 's'} each):
    - Provide 4 distinct options: ["A) ...", "B) ...", "C) ...", "D) ..."]
    - Provide "correctAnswer" (e.g. "B) ...")
    - Provide "rubricKey" citing the textbook principle.
-2. EXACTLY ${questionCounts.veryShortCount || 0} Very Short Answer Questions (Section B - 2 Marks each):
-   - Crisp 2-point direct conceptual or formula questions.
-   - Provide "correctAnswer" with 2 clear points (1 mark per point).
-3. EXACTLY ${questionCounts.shortCount || 0} Short Answer Questions (Section C - 3 Marks each):
+2. EXACTLY ${questionCounts.veryShortCount || 0} Very Short Answer Questions (Section B - ${vsaMarks} Mark${vsaMarks === 1 ? '' : 's'} each):
+   - Crisp direct conceptual, definition, or formula questions.
+   - Provide "correctAnswer" with clear key points corresponding to marks.
+3. EXACTLY ${questionCounts.shortCount || 0} Short Answer Questions (Section C - ${saMarks} Mark${saMarks === 1 ? '' : 's'} each):
    - Conceptual explanation, numerical, or reasoning questions.
-   - Provide "correctAnswer" with 3 distinct points/steps (1 mark each).
-4. EXACTLY ${questionCounts.descriptiveCount || 0} Long Answer / Descriptive / Case Questions (Section D - 5 Marks each):
+   - Provide "correctAnswer" with clear step-by-step points/steps.
+4. EXACTLY ${questionCounts.descriptiveCount || 0} Long Answer / Descriptive / Case Questions (Section D - ${longMarks} Mark${longMarks === 1 ? '' : 's'} each):
    - Detailed comprehensive questions, derivations, or scenario applications.
    - Provide complete step-by-step model answer and explicit marking scheme breakdown in "rubricKey".
+
+PRESENTATION & FORMATTING GUIDELINES (TABLES & DIAGRAMS):
+- For questions involving comparisons, experimental observations, truth tables, or matching items, format the table inside "text" as a clean Markdown table (e.g. | Column 1 | Column 2 |).
+- For questions that require or benefit from a visual diagram, circuit, ray diagram, chemical apparatus, biological structure, or geometry figure, set "hasVisual": true and provide a descriptive "imagePrompt" (e.g. "Diagram of an electric circuit with a resistor, key, and ammeter") or clean inline SVG markup in "diagramSvg".
 
 CRITICAL RULES:
 - Generate ALL ${totalQuestions} requested questions across all sections.
@@ -1418,12 +1495,14 @@ JSON Schema:
     "questionNo": "1",
     "type": "mcq",
     "section": "Section A",
-    "marks": 1,
+    "marks": ${mcqMarks},
     "text": "Question text here",
     "options": ["A) ...", "B) ...", "C) ...", "D) ..."],
     "correctAnswer": "A) ...",
     "rubricKey": "Explanation or citation",
-    "stem": "Chapter / Subtopic name"
+    "stem": "Chapter / Subtopic name",
+    "hasVisual": false,
+    "imagePrompt": ""
   }
 ]`;
 
@@ -1524,24 +1603,24 @@ JSON Schema:
     let qType = q.type ? String(q.type).toLowerCase() : '';
 
     if (!marksVal) {
-      if (qType === 'mcq') marksVal = 1;
-      else if (qType === 'vsa' || qType === 'very_short') marksVal = 2;
-      else if (qType === 'sa' || qType === 'short') marksVal = 3;
-      else marksVal = 5;
+      if (qType === 'mcq') marksVal = mcqMarks;
+      else if (qType === 'vsa' || qType === 'very_short') marksVal = vsaMarks;
+      else if (qType === 'sa' || qType === 'short') marksVal = saMarks;
+      else marksVal = longMarks;
     }
 
     if (!qType) {
-      if (marksVal === 1) qType = 'mcq';
-      else if (marksVal === 2) qType = 'vsa';
-      else if (marksVal === 3) qType = 'sa';
+      if (marksVal === mcqMarks) qType = 'mcq';
+      else if (marksVal === vsaMarks) qType = 'vsa';
+      else if (marksVal === saMarks) qType = 'sa';
       else qType = 'descriptive';
     }
 
     let sectionName = q.section || '';
     if (!sectionName) {
-      if (marksVal === 1 || qType === 'mcq') sectionName = 'Section A';
-      else if (marksVal === 2 || qType === 'vsa') sectionName = 'Section B';
-      else if (marksVal === 3 || qType === 'sa') sectionName = 'Section C';
+      if (marksVal === mcqMarks || qType === 'mcq') sectionName = 'Section A';
+      else if (marksVal === vsaMarks || qType === 'vsa') sectionName = 'Section B';
+      else if (marksVal === saMarks || qType === 'sa') sectionName = 'Section C';
       else sectionName = 'Section D';
     }
 
@@ -1567,9 +1646,290 @@ JSON Schema:
       options: optionsList,
       correctAnswer: String(q.correctAnswer || q.answerKey || q.answer || q.correct_option || '').trim(),
       rubricKey: String(q.rubricKey || q.markingScheme || q.explanation || q.solution || '').trim(),
-      stem: String(q.stem || q.chapter || (selectedChapters[0] || subjectName)).trim()
+      stem: String(q.stem || q.chapter || (selectedChapters[0] || subjectName)).trim(),
+      hasVisual: Boolean(q.hasVisual || q.imagePrompt || q.diagramSvg || q.imageUrl),
+      imagePrompt: q.imagePrompt ? String(q.imagePrompt).trim() : undefined,
+      imageUrl: q.imageUrl ? String(q.imageUrl) : undefined,
+      diagramSvg: q.diagramSvg ? String(q.diagramSvg).trim() : undefined,
+      tableData: q.tableData ? String(q.tableData).trim() : undefined
     };
   });
+}
+
+/**
+ * Generate a single replacement question for a specific slot/topic
+ */
+export async function generateSingleQuestionReplacement(params: {
+  subjectName: string;
+  className: string;
+  chapterTitle: string;
+  subtopics?: string[];
+  questionType: string;
+  marks: number;
+  currentQuestionText?: string;
+  language?: string;
+  difficulty?: string;
+  textbookContext?: string;
+}): Promise<Question | null> {
+  const {
+    subjectName,
+    className,
+    chapterTitle,
+    subtopics = [],
+    questionType,
+    marks,
+    currentQuestionText,
+    language = 'English',
+    difficulty = 'Standard',
+    textbookContext
+  } = params;
+
+  const isMcq = questionType.toLowerCase() === 'mcq';
+  const prompt = `You are an elite school examination board setter (CBSE, ICSE, State Boards).
+Generate EXACTLY 1 high-quality, rigorous question to replace an existing question.
+Subject: ${subjectName}
+Class: ${className}
+Topic/Chapter: ${chapterTitle}
+${subtopics.length > 0 ? `Subtopics: ${subtopics.join(', ')}` : ''}
+Language: ${language}
+Difficulty: ${difficulty}
+Question Typology: ${questionType.toUpperCase()}
+Marks: ${marks} Marks
+
+${currentQuestionText ? `The teacher wants to replace this previous question:
+"${currentQuestionText}"
+Generate a completely fresh, distinct, high-quality alternative question testing the same topic at the same cognitive level.` : ''}
+
+${textbookContext ? `Textbook Context Reference:\n${textbookContext.substring(0, 8000)}` : ''}
+
+CRITICAL RULES:
+- If MCQ: provide 4 distinct options: ["A) ...", "B) ...", "C) ...", "D) ..."], "correctAnswer" (e.g. "C) ..."), and "rubricKey".
+- If non-MCQ: provide concise step-by-step model answer in "correctAnswer" and point-wise marking scheme in "rubricKey".
+- If the question involves data tables, format it inside "text" with a clean Markdown table.
+- If the question involves diagrams, circuits, ray optics, or geometric shapes, set "hasVisual": true and provide a descriptive "imagePrompt".
+- Output MUST be a single valid JSON object (not array).
+
+JSON Schema:
+{
+  "text": "Question text here",
+  "type": "${questionType}",
+  "marks": ${marks},
+  "options": ${isMcq ? '["A) ...", "B) ...", "C) ...", "D) ..."]' : 'null'},
+  "correctAnswer": "Model answer",
+  "rubricKey": "Marking scheme",
+  "stem": "${chapterTitle}",
+  "hasVisual": false,
+  "imagePrompt": ""
+}`;
+
+  try {
+    const aiText = await callGemini36Api(prompt);
+    if (!aiText) return null;
+    const parsed = parseJsonValue(aiText, '{') || (Array.isArray(parseJsonValue(aiText, '[')) ? parseJsonValue(aiText, '[')[0] : null);
+    if (!parsed || (!parsed.text && !parsed.question)) return null;
+
+    let optionsList: string[] | undefined = undefined;
+    if (isMcq) {
+      if (Array.isArray(parsed.options) && parsed.options.length > 0) {
+        optionsList = parsed.options.map((o: any) => String(o));
+      } else if (parsed.options && typeof parsed.options === 'object') {
+        optionsList = Object.entries(parsed.options).map(([k, v]) => `${k}) ${v}`);
+      } else {
+        optionsList = ['A) Option 1', 'B) Option 2', 'C) Option 3', 'D) Option 4'];
+      }
+    }
+
+    const replacementQ: Question = {
+      id: `rep-q-${Date.now()}`,
+      text: String(parsed.text || parsed.question || '').trim(),
+      type: questionType,
+      marks: Number(parsed.marks) || marks,
+      options: optionsList,
+      correctAnswer: String(parsed.correctAnswer || parsed.answer || '').trim(),
+      rubricKey: String(parsed.rubricKey || parsed.explanation || '').trim(),
+      stem: String(parsed.stem || chapterTitle).trim(),
+      hasVisual: Boolean(parsed.hasVisual || parsed.imagePrompt || parsed.diagramSvg),
+      imagePrompt: parsed.imagePrompt ? String(parsed.imagePrompt).trim() : undefined,
+      diagramSvg: parsed.diagramSvg ? String(parsed.diagramSvg).trim() : undefined,
+      tableData: parsed.tableData ? String(parsed.tableData).trim() : undefined
+    };
+
+    // Auto-generate diagram if replacement question specifies visual requirement
+    if (replacementQ.hasVisual && (replacementQ.imagePrompt || replacementQ.text)) {
+      try {
+        const visual = await generateQuestionImageOrDiagram(
+          replacementQ.imagePrompt || replacementQ.text,
+          replacementQ.text,
+          subjectName
+        );
+        if (visual.imageUrl) replacementQ.imageUrl = visual.imageUrl;
+        else if (visual.diagramSvg) replacementQ.diagramSvg = visual.diagramSvg;
+      } catch (imgErr) {
+        console.warn('⚠️ Could not auto-generate visual for replacement question:', imgErr);
+      }
+    }
+
+    return replacementQ;
+  } catch (err) {
+    console.error('Error generating single question replacement:', err);
+    return null;
+  }
+}
+
+/**
+ * Universal prompt generator for exam questions across ANY subject (Science, Math, Social Studies, etc.).
+ * Strictly constrained to the specific question context, with zero answer leakage and zero extra/unmentioned elements.
+ */
+function buildUniversalQuestionDiagramPrompt(prompt: string, questionText: string, subject?: string) {
+  const cleanSubject = (subject || 'General').trim();
+  const cleanPrompt = (prompt || '').trim();
+  const cleanQuestion = (questionText || prompt || '').trim();
+  const visualGoal = cleanPrompt && cleanPrompt !== cleanQuestion ? cleanPrompt : cleanQuestion;
+
+  const imagePromptText = `You are a professional educational textbook and school examination paper illustrator.
+Create a clean, precise, and high-contrast educational figure strictly for this examination question.
+
+EXAMINATION QUESTION CONTEXT:
+Subject: ${cleanSubject}
+Question: "${cleanQuestion}"
+Figure Objective: "${visualGoal}"
+
+MANDATORY RULES (APPLIES STRICTLY):
+1. DEPICT ONLY WHAT IS IN THIS QUESTION: Illustrate ONLY the specific physical setup, scenario, phenomenon, geometric figure, or data described in the question above. Do NOT include ANY unmentioned extra experiments, unrelated apparatus, side tests, or extraneous diagrams.
+2. DO NOT REVEAL THE ANSWER: This figure is an examination stimulus for a student test. Do NOT reveal, label, or display the solution, the final answer, or the underlying principle that the question asks the student to deduce.
+3. ZERO GIBBERISH TEXT: Do NOT generate unreadable pseudo-text, cursive scribbles, or garbled fake letters. Any label must be a real, legible English term mentioned in the question, or clean uppercase letter markers (A, B, C, D).
+4. PURE SOLID WHITE BACKGROUND: The background MUST be pure solid white (#FFFFFF). No laboratory bench clutter, no room shadows, no decorative frames.
+5. CLEAN EDUCATIONAL STYLE: High-contrast, sharp line art or technical textbook illustration suitable for examination paper printing.`;
+
+  const svgPrompt = `You are a professional educational and examination diagram illustrator.
+Create a clean, precise, and standalone vector SVG diagram strictly for this examination question:
+
+EXAMINATION QUESTION CONTEXT:
+Subject: ${cleanSubject}
+Question: "${cleanQuestion}"
+Figure Objective: "${visualGoal}"
+
+MANDATORY RULES:
+1. DEPICT ONLY WHAT IS IN THIS QUESTION: Draw ONLY the specific scenario, apparatus, geometric shape, or phenomenon described in the question above. Do NOT include unmentioned extra experiments, unrelated apparatus, or extraneous side diagrams.
+2. DO NOT REVEAL THE ANSWER: This figure is for a student test. Do NOT reveal or label the answer, solution, or principle that the question asks the student to identify.
+3. STANDALONE SVG ONLY: Return ONLY valid <svg viewBox="0 0 500 350" width="100%" height="auto" xmlns="http://www.w3.org/2000/svg">...</svg> markup. No markdown fences.
+4. PURE WHITE BACKGROUND: Include <rect width="100%" height="100%" fill="#FFFFFF"/> as the first child element.
+5. CRISP DARK LINES: Use clear dark stroke lines (#0F172A, #1E293B, #2563EB) and standard arrowheads (<marker id="arrow" .../>).
+6. LEGIBLE TEXT LABELS: Use <text> elements with font-family="system-ui, -apple-system, sans-serif", font-size="12" to "14", font-weight="600", and fill="#0F172A". All text labels must be real, legible, correctly spelled English words or letter markers (A, B, C). Zero garbled text.`;
+
+  return { cleanSubject, visualGoal, imagePromptText, svgPrompt };
+}
+
+/**
+ * Generate Question Diagram or Image via Gemini 2.5 Flash Image / Gemini SVG
+ * Strictly grounded to the question stem across all subjects without extra content or answer leaks.
+ */
+export async function generateQuestionImageOrDiagram(
+  prompt: string,
+  questionText: string,
+  subject?: string
+): Promise<{ imageUrl?: string; diagramSvg?: string; type: 'svg' | 'image' }> {
+  const geminiKey = getGeminiKey();
+  const { cleanSubject, visualGoal, imagePromptText, svgPrompt } = buildUniversalQuestionDiagramPrompt(prompt, questionText, subject);
+
+  // Try 1: Native Gemini Image Generation (gemini-2.5-flash-image)
+  if (geminiKey && !geminiKey.includes('your_gemini_api_key')) {
+    try {
+      console.log(`🎨 [AI IMAGE ENGINE] Generating grounded image for: "${visualGoal.substring(0, 60)}..." (${cleanSubject})`);
+      const imgRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${geminiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: imagePromptText
+                }
+              ]
+            }
+          ]
+        })
+      });
+
+      if (imgRes.ok) {
+        const imgData = await imgRes.json() as any;
+        const candidates = imgData?.candidates?.[0]?.content?.parts || [];
+        for (const part of candidates) {
+          if (part.inlineData && part.inlineData.data) {
+            const mime = part.inlineData.mimeType || 'image/png';
+            const base64Data = part.inlineData.data;
+            const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+            const fileName = `diagram-${Date.now()}.${ext}`;
+            const buffer = Buffer.from(base64Data, 'base64');
+            
+            let finalUrl = `data:${mime};base64,${base64Data}`;
+            try {
+              const cloudUrl = await uploadImageToSupabase(buffer, fileName, mime, 'diagrams');
+              if (cloudUrl && cloudUrl.startsWith('http')) {
+                finalUrl = cloudUrl;
+                console.log(`☁️ [AI IMAGE ENGINE] Uploaded diagram to Supabase Storage: ${finalUrl}`);
+              }
+            } catch (upErr: any) {
+              console.warn('⚠️ [AI IMAGE ENGINE] Storage upload failed, keeping base64 fallback:', upErr?.message || upErr);
+            }
+
+            console.log(`✅ [AI IMAGE ENGINE] Generated real ${mime} diagram successfully (${Math.round(base64Data.length / 1024)} KB raw).`);
+            return {
+              imageUrl: finalUrl,
+              type: 'image'
+            };
+          }
+        }
+      } else {
+        const errText = await imgRes.text();
+        console.warn(`⚠️ [AI IMAGE ENGINE] gemini-2.5-flash-image returned status ${imgRes.status}: ${errText.substring(0, 150)}. Trying vector SVG...`);
+      }
+    } catch (imgErr: any) {
+      console.warn('⚠️ [AI IMAGE ENGINE] Image generation exception:', imgErr?.message || imgErr);
+    }
+  }
+
+  // Try 2: Clean, sharp Vector SVG diagram generated via Gemini 3.6
+  console.log(`📐 [AI VECTOR SVG] Generating standalone educational SVG diagram (${cleanSubject})...`);
+  try {
+    const rawSvgResponse = await callGemini36Api(svgPrompt);
+    if (rawSvgResponse) {
+      let cleanedSvg = rawSvgResponse.trim();
+      if (cleanedSvg.includes('<svg') && cleanedSvg.includes('</svg>')) {
+        const startIdx = cleanedSvg.indexOf('<svg');
+        const endIdx = cleanedSvg.lastIndexOf('</svg>') + 6;
+        cleanedSvg = cleanedSvg.substring(startIdx, endIdx);
+        // Ensure SVG has responsive width and height
+        if (!cleanedSvg.includes('width=')) {
+          cleanedSvg = cleanedSvg.replace('<svg', '<svg width="100%" height="auto"');
+        }
+
+        let svgCloudUrl: string | undefined;
+        try {
+          const svgBuffer = Buffer.from(cleanedSvg, 'utf-8');
+          const uploadedUrl = await uploadImageToSupabase(svgBuffer, `diagram-${Date.now()}.svg`, 'image/svg+xml', 'diagrams');
+          if (uploadedUrl && uploadedUrl.startsWith('http')) {
+            svgCloudUrl = uploadedUrl;
+            console.log(`☁️ [AI VECTOR SVG] Uploaded SVG to Supabase Storage: ${svgCloudUrl}`);
+          }
+        } catch (upErr: any) {
+          console.warn('⚠️ [AI VECTOR SVG] SVG storage upload notice:', upErr?.message || upErr);
+        }
+
+        console.log(`✅ [AI VECTOR SVG] Generated sharp vector SVG (${cleanedSvg.length} chars).`);
+        return {
+          imageUrl: svgCloudUrl,
+          diagramSvg: cleanedSvg,
+          type: 'svg'
+        };
+      }
+    }
+  } catch (svgErr: any) {
+    console.error('❌ [AI VECTOR SVG] Error generating SVG diagram:', svgErr);
+  }
+
+  throw new Error('Unable to generate image or diagram for this question.');
 }
 
 /**

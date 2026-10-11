@@ -64,8 +64,8 @@ export async function rasterizePdf(buffer: Buffer, scale = 2, maxPages = 1000): 
 export async function rasterizePdfHeaders(
   buffer: Buffer,
   pageNumbers: number[],
-  scale = 1.0,
-  cropRatio = 0.28
+  scale = 0.65,
+  cropRatio = 1.0
 ): Promise<{ pageNumber: number; buffer: Buffer }[]> {
   const pdfjs = await loadPdfjs();
   const loadingTask = pdfjs.getDocument({
@@ -83,7 +83,10 @@ export async function rasterizePdfHeaders(
       const page = await doc.getPage(pageNumber);
       try {
         const viewport = page.getViewport({ scale });
-        const cropHeight = Math.max(120, Math.ceil(viewport.height * cropRatio));
+        // Full thumbnail rendering ensures rotated/sideways/landscape scans (e.g. rotated 90 degrees)
+        // are never cropped out, while scale 0.65 keeps payload lightweight (~25KB/page).
+        const effectiveCrop = cropRatio >= 1.0 || (viewport.width > viewport.height) ? 1.0 : Math.max(0.35, cropRatio);
+        const cropHeight = effectiveCrop >= 1.0 ? Math.ceil(viewport.height) : Math.max(160, Math.ceil(viewport.height * effectiveCrop));
         const canvas = createCanvas(Math.ceil(viewport.width), cropHeight);
         const context = canvas.getContext('2d');
         context.fillStyle = '#ffffff';
@@ -91,7 +94,7 @@ export async function rasterizePdfHeaders(
         await page.render({ canvas: canvas as any, canvasContext: context as any, viewport }).promise;
         headers.push({
           pageNumber,
-          buffer: canvas.toBuffer('image/png')
+          buffer: canvas.toBuffer('image/jpeg', 70)
         });
       } finally {
         page.cleanup();

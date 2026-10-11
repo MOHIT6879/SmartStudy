@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layers, Upload, X, CheckCircle2, Clock, AlertCircle, Sparkles } from 'lucide-react';
+import { Layers, Upload, X, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
 import LanguageSelect from './LanguageSelect';
 
@@ -15,7 +15,9 @@ export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose
   const [selectedLanguage, setSelectedLanguage] = useState('English');
   const [assignmentTitle, setAssignmentTitle] = useState('');
   const [markingScheme, setMarkingScheme] = useState('');
-  const [autoSplitPdf, setAutoSplitPdf] = useState(true);
+  const [bulkMode, setBulkMode] = useState<'single_per_student' | 'combined_pdf'>('single_per_student');
+  const [isFixedPageCount, setIsFixedPageCount] = useState(false);
+  const [fixedPageCount, setFixedPageCount] = useState<number>(4);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -54,12 +56,15 @@ export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose
     if (e.target.files) {
       const filesArray = Array.from(e.target.files);
       setSelectedFiles(filesArray);
+      if (filesArray.length > 1) {
+        setBulkMode('single_per_student');
+      }
     }
   };
 
   const handleStartBulkEvaluation = async () => {
     if (selectedFiles.length === 0) {
-      setErrorMsg('Please select at least 1 student answer sheet image to evaluate.');
+      setErrorMsg('Please select at least 1 student answer sheet image or PDF to evaluate.');
       return;
     }
     if (!assignmentId) {
@@ -82,7 +87,11 @@ export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose
       formData.append('className', className);
       formData.append('subject', assignmentTitle);
       formData.append('markingScheme', markingScheme);
-      formData.append('autoSplitPdf', autoSplitPdf ? 'true' : 'false');
+      formData.append('bulkMode', bulkMode);
+      formData.append('autoSplitPdf', bulkMode === 'combined_pdf' ? 'true' : 'false');
+      if (bulkMode === 'combined_pdf' && isFixedPageCount && fixedPageCount > 0) {
+        formData.append('fixedPageCount', String(fixedPageCount));
+      }
 
       const res = await fetch(`${API_BASE_URL}/api/submissions/bulk`, {
         method: 'POST',
@@ -114,10 +123,10 @@ export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose
           <div>
             <h2 style={{ margin: 0, fontSize: '1.25rem', color: '#111827', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Layers className="size-5 text-blue-600" />
-              <span>Bulk Script Evaluation (50-100)</span>
+              <span>Bulk Script Evaluation</span>
             </h2>
             <p style={{ margin: '0.2rem 0 0 0', fontSize: '0.8125rem', color: '#64748B' }}>
-              Process entire class stacks of handwritten papers in parallel through the 6-agent pipeline.
+              Process entire class stacks of handwritten papers through the evaluation pipeline.
             </p>
           </div>
           <button
@@ -176,45 +185,121 @@ export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose
               <label className="form-label">Answer key / marking scheme (optional)</label>
               <textarea
                 className="form-input"
-                rows={4}
+                rows={3}
                 value={markingScheme}
                 onChange={(e) => setMarkingScheme(e.target.value)}
-                placeholder="1. F = ma (2 marks)\n2. a = 5 m/s\u00b2, s = 80 m (5 marks)"
+                placeholder="1. F = ma (2 marks)\n2. a = 5 m/s², s = 80 m (5 marks)"
               />
               <p style={{ fontSize: '0.75rem', color: '#64748B', margin: '0.35rem 0 0 0' }}>
-                Applies to every sheet in this batch and takes priority over the assignment's stored benchmark key when they disagree.
+                Applies to every sheet in this batch and takes priority over the assignment's stored benchmark key.
               </p>
             </div>
 
-            {/* Smart Multi-Student PDF Auto-Split Card */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: '0.75rem',
-                padding: '0.75rem 1rem',
-                background: autoSplitPdf ? '#F0FDF4' : '#F8FAFC',
-                border: autoSplitPdf ? '1px solid #BBF7D0' : '1px solid #E2E8F0',
-                borderRadius: '0.5rem',
-                transition: 'all 0.2s ease'
-              }}
-            >
-              <input
-                type="checkbox"
-                id="auto-split-pdf"
-                checked={autoSplitPdf}
-                onChange={(e) => setAutoSplitPdf(e.target.checked)}
-                style={{ width: '1.15rem', height: '1.15rem', marginTop: '0.15rem', cursor: 'pointer', accentColor: '#16A34A' }}
-              />
-              <label htmlFor="auto-split-pdf" style={{ cursor: 'pointer', margin: 0, flex: 1 }}>
-                <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: autoSplitPdf ? '#166534' : '#334155', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                  <Sparkles className="size-3.5 text-green-600" />
-                  <span>Auto-Split Multi-Student PDF (AI Name & Roll No Detection)</span>
-                </div>
-                <div style={{ fontSize: '0.75rem', color: autoSplitPdf ? '#15803D' : '#64748B', marginTop: '0.15rem' }}>
-                  If uploading a single combined PDF (e.g. 24 students, ~14 sides each), Paatam AI will automatically detect handwritten names at the top of pages, segregate each student's paper, and evaluate each individually.
-                </div>
+            {/* Bulk Upload Mode: 2 Clear Options */}
+            <div className="form-group">
+              <label className="form-label" style={{ fontWeight: 600, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <span>Upload Organization Mode</span>
               </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                
+                {/* Option 1: Single PDF per Student */}
+                <div
+                  onClick={() => setBulkMode('single_per_student')}
+                  style={{
+                    border: bulkMode === 'single_per_student' ? '2px solid #2563EB' : '1px solid #E2E8F0',
+                    background: bulkMode === 'single_per_student' ? '#EFF6FF' : '#FFFFFF',
+                    borderRadius: '0.625rem',
+                    padding: '0.875rem',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                    boxShadow: bulkMode === 'single_per_student' ? '0 1px 3px rgba(37, 99, 235, 0.15)' : 'none'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <input
+                        type="radio"
+                        name="bulkMode"
+                        checked={bulkMode === 'single_per_student'}
+                        onChange={() => setBulkMode('single_per_student')}
+                        style={{ cursor: 'pointer', accentColor: '#2563EB' }}
+                      />
+                      <span style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#1E293B' }}>Single PDF per Student</span>
+                    </div>
+                    <span style={{ fontSize: '0.625rem', fontWeight: 700, padding: '0.15rem 0.4rem', borderRadius: '9999px', background: '#DBEAFE', color: '#1E40AF', textTransform: 'uppercase' }}>
+                      Recommended
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '0.75rem', color: '#64748B', lineHeight: 1.35, paddingLeft: '1.25rem' }}>
+                    Each uploaded file is 1 student's complete paper. Directly evaluates without boundary checking or splitting.
+                  </p>
+                </div>
+
+                {/* Option 2: Multiple Students in 1 PDF */}
+                <div
+                  onClick={() => setBulkMode('combined_pdf')}
+                  style={{
+                    border: bulkMode === 'combined_pdf' ? '2px solid #16A34A' : '1px solid #E2E8F0',
+                    background: bulkMode === 'combined_pdf' ? '#F0FDF4' : '#FFFFFF',
+                    borderRadius: '0.625rem',
+                    padding: '0.875rem',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                    boxShadow: bulkMode === 'combined_pdf' ? '0 1px 3px rgba(22, 163, 74, 0.15)' : 'none'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <input
+                        type="radio"
+                        name="bulkMode"
+                        checked={bulkMode === 'combined_pdf'}
+                        onChange={() => setBulkMode('combined_pdf')}
+                        style={{ cursor: 'pointer', accentColor: '#16A34A' }}
+                      />
+                      <span style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#1E293B' }}>Multiple Students in 1 PDF</span>
+                    </div>
+                    <span style={{ fontSize: '0.625rem', fontWeight: 700, padding: '0.15rem 0.4rem', borderRadius: '9999px', background: '#DCFCE7', color: '#15803D', textTransform: 'uppercase' }}>
+                      AI Splitter
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '0.75rem', color: '#64748B', lineHeight: 1.35, paddingLeft: '1.25rem' }}>
+                    Single combined master scan. AI detects student names & roll numbers to segregate each student's pages.
+                  </p>
+                </div>
+              </div>
+
+              {/* Fixed Booklet Size Option */}
+              {bulkMode === 'combined_pdf' && (
+                <div style={{ marginTop: '0.75rem', padding: '0.75rem 1rem', background: '#F8FAFC', borderRadius: '0.5rem', border: '1px solid #E2E8F0' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.8125rem', fontWeight: 600, color: '#334155' }}>
+                    <input
+                      type="checkbox"
+                      checked={isFixedPageCount}
+                      onChange={(e) => setIsFixedPageCount(e.target.checked)}
+                      style={{ accentColor: '#2563EB', cursor: 'pointer' }}
+                    />
+                    <span>Fixed Booklet Size (Instant 0-Second Splitting)</span>
+                  </label>
+                  <p style={{ margin: '0.25rem 0 0.5rem 1.45rem', fontSize: '0.75rem', color: '#64748B', lineHeight: 1.3 }}>
+                    Check this if every student receives the exact same number of pages (e.g. exactly 4 pages per test booklet).
+                  </p>
+                  {isFixedPageCount && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginLeft: '1.45rem', marginTop: '0.35rem' }}>
+                      <span style={{ fontSize: '0.8125rem', color: '#475569', fontWeight: 500 }}>Pages per student booklet:</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={fixedPageCount}
+                        onChange={(e) => setFixedPageCount(Math.max(1, parseInt(e.target.value) || 1))}
+                        style={{ width: '70px', padding: '0.25rem 0.5rem', borderRadius: '0.375rem', border: '1px solid #CBD5E1', fontSize: '0.8125rem', fontWeight: 700 }}
+                      />
+                      <span style={{ fontSize: '0.75rem', color: '#16A34A', fontWeight: 700 }}>⚡ 0s AI Splitting Active</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Drop Zone */}
@@ -281,13 +366,32 @@ export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose
           <div>
             <div style={{ background: '#F8FAFC', borderRadius: '0.5rem', padding: '1rem', border: '1px solid #E2E8F0', marginBottom: '1.25rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#334155' }}>
-                  Processing Batch ({batchJob?.processed || 0} / {batchJob?.total || selectedFiles.length} Graded)
+                <span style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#1E293B' }}>
+                  {batchJob?.stage === 'splitting' ? (
+                    'Stage 1: Page Slicing & Boundary Detection'
+                  ) : batchJob?.status === 'completed' ? (
+                    `Evaluation Completed (${batchJob?.successful || 0} / ${batchJob?.total || 0} Graded)`
+                  ) : (
+                    `Stage 2: Parallel AI Grading (${batchJob?.processed || 0} / ${batchJob?.total || selectedFiles.length} Students)`
+                  )}
                 </span>
-                <span className={`badge ${batchJob?.status === 'completed' ? 'badge-green' : 'badge-blue'}`}>
-                  {batchJob?.status === 'completed' ? '● Completed' : '● Processing'}
+                <span className={`badge ${
+                  batchJob?.status === 'completed'
+                    ? 'badge-green'
+                    : batchJob?.stage === 'splitting'
+                    ? 'badge-blue'
+                    : 'badge-blue'
+                }`}>
+                  {batchJob?.status === 'completed' ? '● Completed' : batchJob?.stage === 'splitting' ? '● Slicing Document' : '● Grading In Parallel'}
                 </span>
               </div>
+
+              {/* Status Message */}
+              {batchJob?.statusMessage && (
+                <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.75rem', color: '#475569', fontStyle: 'italic' }}>
+                  {batchJob.statusMessage}
+                </p>
+              )}
 
               {/* Progress Bar */}
               <div style={{ width: '100%', height: '8px', background: '#E2E8F0', borderRadius: '9999px', overflow: 'hidden', marginBottom: '0.5rem' }}>
@@ -295,7 +399,7 @@ export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose
                   style={{
                     width: `${progressPercent}%`,
                     height: '100%',
-                    background: '#2563EB',
+                    background: batchJob?.status === 'completed' ? '#16A34A' : '#2563EB',
                     borderRadius: '9999px',
                     transition: 'width 0.4s ease'
                   }}
@@ -304,37 +408,63 @@ export default function BulkEvaluationModal({ isOpen, assignmentId = '', onClose
 
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#64748B' }}>
                 <span>Progress: {progressPercent}%</span>
-                <span>Successful: {batchJob?.successful || 0}</span>
+                <span>
+                  {batchJob?.stage === 'splitting' && batchJob?.splitProgress
+                    ? `Page ${batchJob.splitProgress.current} of ${batchJob.splitProgress.total}`
+                    : `Successful: ${batchJob?.successful || 0} | Failed: ${batchJob?.failed || 0}`}
+                </span>
               </div>
             </div>
 
             {/* Live Cards Feed */}
             <div style={{ marginBottom: '1.25rem' }}>
-              <h4 style={{ fontSize: '0.875rem', color: '#334155', marginBottom: '0.5rem' }}>
-                Evaluated Papers ({batchJob?.submissions?.length || 0}):
+              <h4 style={{ fontSize: '0.875rem', color: '#334155', marginBottom: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>Evaluated Papers ({batchJob?.submissions?.length || 0}):</span>
+                {batchJob?.status === 'processing' && (
+                  <span style={{ fontSize: '0.75rem', color: '#2563EB', fontWeight: 500 }}>
+                    ⚡ Updating live...
+                  </span>
+                )}
               </h4>
 
               <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                {batchJob?.submissions?.map((sub: any, idx: number) => {
-                  const scoreVal = sub.aiEvaluation?.score ?? sub.finalScore ?? 0;
-                  return (
-                    <div
-                      key={idx}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        padding: '0.5rem 0.75rem',
-                        background: '#F8FAFC',
-                        borderRadius: '0.375rem',
-                        border: '1px solid #E2E8F0'
-                      }}
-                    >
-                      <span style={{ fontWeight: 600, fontSize: '0.8125rem', color: '#111827' }}>{sub.studentName}</span>
-                      <span style={{ fontSize: '0.8125rem', fontWeight: 800, color: '#2563EB' }}>{scoreVal}%</span>
-                    </div>
-                  );
-                })}
+                {(!batchJob?.submissions || batchJob.submissions.length === 0) ? (
+                  <div style={{ padding: '1rem', textAlign: 'center', color: '#94A3B8', fontSize: '0.8125rem', background: '#F8FAFC', borderRadius: '0.375rem', border: '1px dashed #CBD5E1' }}>
+                    {batchJob?.stage === 'splitting'
+                      ? 'Analyzing and segregating student booklets...'
+                      : 'Grading student submissions in parallel... Results will appear live here.'}
+                  </div>
+                ) : (
+                  batchJob.submissions.map((sub: any, idx: number) => {
+                    const scoreVal = sub.aiEvaluation?.score ?? sub.finalScore ?? 0;
+                    const maxScore = sub.aiEvaluation?.maxScore ?? 100;
+                    return (
+                      <div
+                        key={idx}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          padding: '0.5rem 0.75rem',
+                          background: '#F8FAFC',
+                          borderRadius: '0.375rem',
+                          border: '1px solid #E2E8F0'
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <CheckCircle2 className="size-4 text-green-600" />
+                          <span style={{ fontWeight: 600, fontSize: '0.8125rem', color: '#111827' }}>{sub.studentName}</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span style={{ fontSize: '0.75rem', color: '#64748B' }}>{scoreVal}/{maxScore} pts</span>
+                          <span style={{ fontSize: '0.8125rem', fontWeight: 800, color: '#2563EB' }}>
+                            {Math.round((scoreVal / (maxScore || 1)) * 100)}%
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
 

@@ -4,7 +4,7 @@ import { getConfiguredGeminiModel } from './aiService.js';
 import { expandPdfFilesToImages } from './pdfRasterService.js';
 import { performOcrPages } from './ocrService.js';
 import { supabase, uploadImageToSupabase } from '../db/supabase.js';
-import { detectAndSplitStudentSubmissions } from './studentBoundaryService.js';
+import { detectAndSplitStudentSubmissions, formatStudentDisplayName, isSameStudent, runWithConcurrency, SplitProgressUpdate } from './studentBoundaryService.js';
 
 export interface BatchItemFile {
   buffer: Buffer;
@@ -21,6 +21,10 @@ export interface BatchItemFile {
 
 export interface BatchJob {
   id: string;
+  stage: 'queued' | 'splitting' | 'grading' | 'completed' | 'failed';
+  splitProgress?: { current: number; total: number; studentsFound: number };
+  gradingProgress?: { current: number; total: number; successful: number; failed: number };
+  statusMessage?: string;
   total: number;
   processed: number;
   successful: number;
@@ -53,7 +57,9 @@ async function unpackAndNormalizeFiles(
   targetClassName?: string,
   assignmentId?: string,
   selectedLanguage: string = 'English',
-  targetSubject?: string
+  targetSubject?: string,
+  fixedPageCount?: number,
+  onProgress?: (progress: SplitProgressUpdate) => void
 ): Promise<BatchItemFile[]> {
   const normalizedFiles: BatchItemFile[] = [];
   let uniqueCounter = 0;
@@ -145,15 +151,20 @@ async function unpackAndNormalizeFiles(
             targetClassName,
             assignmentId,
             language: selectedLanguage,
-            subject: targetSubject
+            subject: targetSubject,
+            fixedPageCount,
+            onProgress
           });
 
           if (splitBatches.length > 1) {
             console.log(`✨ [SMART SPLITTER] Segregated "${filename}" into ${splitBatches.length} individual student submissions with single-pass OCR!`);
             for (const batch of splitBatches) {
+              const pageLabel = batch.pageNumbers && batch.pageNumbers.length > 1 && (batch.endPage - batch.startPage + 1 !== batch.pageCount)
+                ? `pages_${batch.pageNumbers.join('-')}`
+                : `p${batch.startPage}-p${batch.endPage}`;
               normalizedFiles.push({
                 buffer: batch.pdfBuffer,
-                originalname: `${batch.studentName.replace(/\s+/g, '_')}_p${batch.startPage}-p${batch.endPage}.pdf`,
+                originalname: `${batch.studentName.replace(/\s+/g, '_')}_${pageLabel}.pdf`,
                 mimetype: 'application/pdf',
                 studentName: batch.studentName,
                 groupKey: `split:${uniqueCounter++}`,
@@ -202,13 +213,16 @@ export function createBatchJob(
   targetClassName?: string,
   targetSubject?: string,
   markingSchemeText?: string,
-  autoSplitPdf: boolean = true
+  autoSplitPdf: boolean = true,
+  fixedPageCount?: number
 ): BatchJob {
   const jobId = 'batch-' + Date.now();
   const now = new Date().toISOString();
 
   const newJob: BatchJob = {
     id: jobId,
+    stage: 'queued',
+    statusMessage: 'Queued for processing...',
     total: files.length,
     processed: 0,
     successful: 0,
@@ -223,10 +237,12 @@ export function createBatchJob(
   batchJobs[jobId] = newJob;
 
   // Launch background processing asynchronously
-  processBatchQueue(jobId, files, assignmentId, selectedLanguage, targetClassName, targetSubject, markingSchemeText, autoSplitPdf).catch((err) => {
+  processBatchQueue(jobId, files, assignmentId, selectedLanguage, targetClassName, targetSubject, markingSchemeText, autoSplitPdf, fixedPageCount).catch((err) => {
     console.error(`❌ Batch Job ${jobId} execution error:`, err);
     if (batchJobs[jobId]) {
       batchJobs[jobId].status = 'failed';
+      batchJobs[jobId].stage = 'failed';
+      batchJobs[jobId].statusMessage = err?.message || 'Execution error';
       batchJobs[jobId].updatedAt = new Date().toISOString();
     }
   });
@@ -242,7 +258,7 @@ export function getBatchJob(jobId: string): BatchJob | null {
 }
 
 /**
- * Background Throttled Concurrency Worker Pool
+ * Background Concurrency Worker Pool for Gemini Pay-As-You-Go
  */
 async function processBatchQueue(
   jobId: string,
@@ -252,16 +268,32 @@ async function processBatchQueue(
   targetClassName?: string,
   targetSubject?: string,
   markingSchemeText?: string,
-  autoSplitPdf: boolean = true
+  autoSplitPdf: boolean = true,
+  fixedPageCount?: number
 ) {
   const job = batchJobs[jobId];
   if (!job) return;
 
   job.status = 'processing';
+  job.stage = 'splitting';
+  job.statusMessage = 'Analyzing and segregating documents...';
   job.updatedAt = new Date().toISOString();
 
   // 1. Unpack ZIP archives, auto-split multi-student PDFs, and normalize all files
-  const unpackedFiles = await unpackAndNormalizeFiles(rawFiles, autoSplitPdf, targetClassName, assignmentId, selectedLanguage, targetSubject);
+  const unpackedFiles = await unpackAndNormalizeFiles(
+    rawFiles,
+    autoSplitPdf,
+    targetClassName,
+    assignmentId,
+    selectedLanguage,
+    targetSubject,
+    fixedPageCount,
+    (progress) => {
+      job.splitProgress = { current: progress.current, total: progress.total, studentsFound: progress.studentsFound };
+      job.statusMessage = progress.statusMessage;
+      job.updatedAt = new Date().toISOString();
+    }
+  );
 
   let className = targetClassName || 'General Class';
   let subjectName = targetSubject || 'Unassigned Subject';
@@ -277,8 +309,7 @@ async function processBatchQueue(
   const effectiveMarkingScheme = (markingSchemeText || '').trim() || (assignment.answer_key_text || '').trim();
   if (process.env.PRIMARY_AI_PROVIDER?.toLowerCase() !== 'sarvam' && assignment.reasoning_model) reasoningModel = assignment.reasoning_model;
 
-  // 2. Group files by groupKey (only pages from the same ZIP folder share a group — see
-  // unpackAndNormalizeFiles). The extracted/inferred name is used purely as a display label.
+  // 2. Group files by groupKey
   const studentGroups: Record<string, BatchItemFile[]> = {};
   const groupDisplayNames: Record<string, string> = {};
   for (const file of unpackedFiles) {
@@ -293,19 +324,45 @@ async function processBatchQueue(
   const studentEntries = Object.entries(studentGroups).map(
     ([key, groupFiles]) => [groupDisplayNames[key], groupFiles] as [string, BatchItemFile[]]
   );
+  job.stage = 'grading';
   job.total = studentEntries.length;
+  job.processed = 0;
+  job.successful = 0;
+  job.failed = 0;
+  job.gradingProgress = { current: 0, total: studentEntries.length, successful: 0, failed: 0 };
+  job.statusMessage = `Starting parallel grading for ${studentEntries.length} student submissions...`;
+  job.updatedAt = new Date().toISOString();
 
-  console.log(`🚀 Starting Batch Job ${jobId}: ${studentEntries.length} student papers (${unpackedFiles.length} extracted files). Throttled for 15 RPM Free Gemini API...`);
+  console.log(`🚀 Starting Batch Job ${jobId}: ${studentEntries.length} student papers. Parallel grading (concurrency 6) on Gemini Pay-As-You-Go...`);
 
-  for (let idx = 0; idx < studentEntries.length; idx++) {
-    const [studentName, pageFiles] = studentEntries[idx];
+  // Load class student roster once for high-accuracy student linking
+  let roster: Array<{ id: string; name: string; roll_number?: string }> = [];
+  if (isSupabaseConfigured()) {
+    try {
+      const { data: stData } = await supabase.from('students').select('id, name, roll_number').limit(200);
+      if (stData) roster = stData;
+    } catch (e) {
+      console.warn('⚠️ Could not load students roster:', e);
+    }
+  }
+
+  // Parallel Worker Pool: process 6 student evaluations concurrently
+  await runWithConcurrency(studentEntries, 6, async ([rawStudentName, pageFiles], idx) => {
+    let studentName = formatStudentDisplayName(rawStudentName);
+    let matchedStudentId: string | null = null;
+
+    if (roster.length > 0 && rawStudentName) {
+      const matched = roster.find(s => isSameStudent(rawStudentName, s.name));
+      if (matched) {
+        studentName = matched.name;
+        matchedStudentId = matched.id;
+      }
+    }
+
     const pageBuffers = pageFiles.map(f => f.buffer);
-
-    // Pick primary file (prefer PDF if available, else first image)
     const primaryFile = pageFiles.find(f => f.mimetype === 'application/pdf') || pageFiles[0];
 
     try {
-      // Upload images/PDFs to Supabase Storage directly without PDF page expansion
       const cloudUrls: string[] = [];
       if (isSupabaseConfigured()) {
         for (const pFile of pageFiles) {
@@ -360,8 +417,7 @@ async function processBatchQueue(
         questionEvaluations: pdfEval.questionEvaluations
       };
 
-      let matchedStudentId: string | null = null;
-      if (isSupabaseConfigured() && studentName) {
+      if (!matchedStudentId && isSupabaseConfigured() && studentName) {
         try {
           const { data: stMatch } = await supabase
             .from('students')
@@ -431,15 +487,20 @@ async function processBatchQueue(
       job.errors.push({ fileName: studentName, error: err.message || 'Evaluation error' });
     } finally {
       job.processed++;
+      job.gradingProgress = {
+        current: job.processed,
+        total: job.total,
+        successful: job.successful,
+        failed: job.failed
+      };
+      job.statusMessage = `Graded ${job.processed} of ${job.total} student papers (${job.successful} successful)...`;
       job.updatedAt = new Date().toISOString();
-      // 4-second delay between student papers to guarantee 100% compliance with 15 RPM limit
-      if (idx < studentEntries.length - 1) {
-        await delay(4000);
-      }
     }
-  }
+  });
 
+  job.stage = job.failed === job.total ? 'failed' : 'completed';
   job.status = job.failed === job.total ? 'failed' : 'completed';
+  job.statusMessage = `Batch complete: ${job.successful} of ${job.total} student papers graded successfully.`;
   job.updatedAt = new Date().toISOString();
   console.log(`✅ Batch Job ${jobId} Completed! (${job.successful}/${job.total} student papers graded successfully).`);
 }
@@ -447,14 +508,21 @@ async function processBatchQueue(
 /**
  * Extract clean student name from uploaded filename (e.g., "Aarav_Sharma_Sheet1.jpg" -> "Aarav Sharma")
  */
-function extractStudentNameFromFilename(filename: string): string | null {
+export function extractStudentNameFromFilename(filename: string): string | null {
   if (!filename) return null;
   const nameWithoutExt = filename.substring(0, filename.lastIndexOf('.')) || filename;
+
+  // Ignore general non-student document filenames
+  if (/\b(cbse|grade|term|exam|test|marking|scheme|paper|question|batch|combined)\b/i.test(nameWithoutExt)) {
+    return null;
+  }
+
   const cleaned = nameWithoutExt
     .replace(/[-_]?(page|p|sheet|ans|doc|scan|part)?\d+/gi, '')
     .replace(/\(\d+\)/g, '')
-    .replace(/[-_]/g, ' ')
+    .replace(/[._-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  return cleaned.length >= 2 ? cleaned : null;
+  if (cleaned.length < 2) return null;
+  return formatStudentDisplayName(cleaned);
 }

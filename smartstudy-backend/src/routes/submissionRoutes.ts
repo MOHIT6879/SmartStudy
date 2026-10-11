@@ -213,7 +213,7 @@ router.post('/submissions', uploadDisk.any(), optionalAuth, async (req: Authenti
 // -------------------------------------------------------------
 router.post('/submissions/bulk', uploadDisk.any(), optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { assignmentId, selectedLanguage, className, subject, markingScheme, autoSplitPdf } = req.body;
+    const { assignmentId, selectedLanguage, className, subject, markingScheme, autoSplitPdf, bulkMode } = req.body;
     const files = (req.files as Express.Multer.File[]) || [];
 
     if (files.length === 0) {
@@ -229,7 +229,24 @@ router.post('/submissions/bulk', uploadDisk.any(), optionalAuth, async (req: Aut
       mimetype: f.mimetype || 'image/jpeg'
     }));
 
-    const shouldAutoSplit = autoSplitPdf !== 'false' && autoSplitPdf !== false;
+    // Determine splitting behavior:
+    // "single_per_student": each file is 1 student's answer sheet -> NO splitting! Direct evaluation!
+    // "combined_pdf": 1 combined master PDF containing multiple students -> AI splitting active.
+    let shouldAutoSplit = false;
+    if (bulkMode === 'single_per_student' || autoSplitPdf === 'false' || autoSplitPdf === false) {
+      shouldAutoSplit = false;
+    } else if (bulkMode === 'combined_pdf' || autoSplitPdf === 'true' || autoSplitPdf === true) {
+      shouldAutoSplit = true;
+    } else {
+      // Intelligent fallback: if teacher uploaded multiple files, each is 1 student's sheet.
+      // Only a single multi-page PDF defaults to autoSplit if completely unspecified.
+      shouldAutoSplit = batchFiles.length === 1 && (batchFiles[0].mimetype === 'application/pdf' || batchFiles[0].originalname.toLowerCase().endsWith('.pdf'));
+    }
+
+    const rawFixedPages = req.body.fixedPageCount || req.body.fixedPagesPerStudent;
+    const fixedPageCount = rawFixedPages && Number(rawFixedPages) > 0 ? Math.floor(Number(rawFixedPages)) : undefined;
+
+    console.log(`📦 [BULK UPLOAD] Mode: ${shouldAutoSplit ? 'Combined PDF (Auto-Split)' : 'Single PDF per Student (Direct Evaluation)'} | Fixed Pages: ${fixedPageCount || 'None (AI)'} | Files: ${batchFiles.length}`);
 
     const batchJob = createBatchJob(
       batchFiles,
@@ -238,7 +255,8 @@ router.post('/submissions/bulk', uploadDisk.any(), optionalAuth, async (req: Aut
       className,
       subject,
       markingScheme,
-      shouldAutoSplit
+      shouldAutoSplit,
+      fixedPageCount
     );
 
     res.json({
@@ -246,6 +264,7 @@ router.post('/submissions/bulk', uploadDisk.any(), optionalAuth, async (req: Aut
       jobId: batchJob.id,
       total: batchJob.total,
       status: batchJob.status,
+      stage: batchJob.stage,
       message: `Successfully initiated batch evaluation for ${batchJob.total} student sheets.`
     });
   } catch (err: any) {
@@ -264,15 +283,23 @@ router.get('/submissions/batch/:jobId', optionalAuth, (req: AuthenticatedRequest
       return res.status(404).json({ success: false, message: `Batch job '${jobId}' not found.` });
     }
 
+    const progressPercent = job.total > 0
+      ? Math.round((job.processed / job.total) * 100)
+      : (job.splitProgress && job.splitProgress.total > 0 ? Math.round((job.splitProgress.current / job.splitProgress.total) * 100) : 0);
+
     res.json({
       success: true,
       jobId: job.id,
       status: job.status,
+      stage: job.stage || (job.status === 'processing' ? 'grading' : job.status),
+      splitProgress: job.splitProgress || null,
+      gradingProgress: job.gradingProgress || null,
+      statusMessage: job.statusMessage || '',
       total: job.total,
       processed: job.processed,
       successful: job.successful,
       failed: job.failed,
-      progressPercent: Math.round((job.processed / job.total) * 100),
+      progressPercent,
       submissions: job.submissions,
       errors: job.errors,
       updatedAt: job.updatedAt
@@ -455,15 +482,101 @@ router.post('/submissions/:id/override', optionalAuth, async (req: Authenticated
   }
 });
 
-// Delete Submission
+// Delete Submission (with automatic Supabase Storage file cleanup)
 router.delete('/submissions/:id', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
+
+    // Fetch submission first to find and remove attached files from storage
+    const { data: subData } = await supabase
+      .from('submissions')
+      .select('sample_paper_url, sample_paper_urls')
+      .eq('id', id)
+      .single();
+
+    if (subData) {
+      const urls: string[] = [];
+      if (subData.sample_paper_url) urls.push(subData.sample_paper_url);
+      if (subData.sample_paper_urls) {
+        try {
+          const parsed = typeof subData.sample_paper_urls === 'string' ? JSON.parse(subData.sample_paper_urls) : subData.sample_paper_urls;
+          if (Array.isArray(parsed)) urls.push(...parsed);
+        } catch (e) {}
+      }
+
+      const storagePaths = urls
+        .filter((u) => u && u.includes('student-submissions'))
+        .map((u) => {
+          const match = u.match(/student-submissions\/(.+)$/);
+          return match ? match[1] : null;
+        })
+        .filter(Boolean) as string[];
+
+      if (storagePaths.length > 0) {
+        try {
+          await supabase.storage.from('student-submissions').remove(storagePaths);
+        } catch (stErr) {
+          console.warn('⚠️ Storage file cleanup notice:', stErr);
+        }
+      }
+    }
+
     const { error } = await supabase.from('submissions').delete().eq('id', id);
     if (error) throw error;
-    res.json({ success: true, message: 'Submission deleted successfully.' });
+    res.json({ success: true, message: 'Submission and associated files deleted successfully.' });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || 'Error deleting submission' });
+  }
+});
+
+// Bulk Delete Submissions (e.g. by assignmentId or all) with storage cleanup
+router.delete('/submissions', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const assignmentId = req.query.assignmentId as string | undefined;
+    let query = supabase.from('submissions').select('id, sample_paper_url, sample_paper_urls');
+    if (assignmentId) {
+      query = query.eq('assignment_id', assignmentId);
+    }
+
+    const { data: subs, error: fetchErr } = await query;
+    if (fetchErr) throw fetchErr;
+
+    if (subs && subs.length > 0) {
+      const allUrls: string[] = [];
+      subs.forEach((s) => {
+        if (s.sample_paper_url) allUrls.push(s.sample_paper_url);
+        if (s.sample_paper_urls) {
+          try {
+            const parsed = typeof s.sample_paper_urls === 'string' ? JSON.parse(s.sample_paper_urls) : s.sample_paper_urls;
+            if (Array.isArray(parsed)) allUrls.push(...parsed);
+          } catch (e) {}
+        }
+      });
+
+      const storagePaths = allUrls
+        .filter((u) => u && u.includes('student-submissions'))
+        .map((u) => {
+          const match = u.match(/student-submissions\/(.+)$/);
+          return match ? match[1] : null;
+        })
+        .filter(Boolean) as string[];
+
+      if (storagePaths.length > 0) {
+        try {
+          await supabase.storage.from('student-submissions').remove(storagePaths);
+        } catch (stErr) {
+          console.warn('⚠️ Storage files bulk cleanup notice:', stErr);
+        }
+      }
+
+      const ids = subs.map((s) => s.id);
+      const { error: delErr } = await supabase.from('submissions').delete().in('id', ids);
+      if (delErr) throw delErr;
+    }
+
+    res.json({ success: true, count: subs?.length || 0, message: 'Submissions and storage files cleaned up.' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Error bulk deleting submissions' });
   }
 });
 

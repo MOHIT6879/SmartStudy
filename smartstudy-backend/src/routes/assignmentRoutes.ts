@@ -10,6 +10,7 @@ const router = Router();
 router.post(['/assignments', '/save-assignment'], optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const {
+      id: requestedId,
       title,
       questions,
       className,
@@ -26,7 +27,7 @@ router.post(['/assignments', '/save-assignment'], optionalAuth, async (req: Auth
       answerKeyUrl
     } = req.body;
 
-    const id = 'assign-' + Date.now();
+    const id = requestedId || ('assign-' + Date.now());
     const createdAt = new Date().toISOString();
     const titleVal = title || 'Daily Learning Assignment';
     const classVal = String(className || '').trim();
@@ -68,14 +69,14 @@ router.post(['/assignments', '/save-assignment'], optionalAuth, async (req: Auth
       answer_key_url: answerKeyUrl || null
     };
 
-    let { error: dbErr } = await supabase.from('assignments').insert([newAssignment]);
+    let { error: dbErr } = await supabase.from('assignments').upsert([newAssignment]);
     if (dbErr) {
-      console.warn('⚠️ Supabase DB Insert Notice (retrying with legacy assignment schema):', dbErr.message);
+      console.warn('⚠️ Supabase DB Upsert Notice (retrying with legacy assignment schema):', dbErr.message);
       const legacyAssignment = { ...newAssignment };
       delete legacyAssignment.section_id;
       delete legacyAssignment.teacher_subject_id;
-      const { error: retryErr } = await supabase.from('assignments').insert([legacyAssignment]);
-      if (retryErr) console.error('❌ Supabase DB Insert Fallback Error:', retryErr.message);
+      const { error: retryErr } = await supabase.from('assignments').upsert([legacyAssignment]);
+      if (retryErr) console.error('❌ Supabase DB Upsert Fallback Error:', retryErr.message);
     }
 
     // Lookup students to dispatch notifications ONLY if status is dispatched
@@ -152,7 +153,7 @@ router.post(['/assignments', '/save-assignment'], optionalAuth, async (req: Auth
 // List Assignments
 router.get('/assignments', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { classSubjectId, sectionId, classId } = req.query;
+    const { classSubjectId, sectionId, classId, subject, className } = req.query;
 
     let { data, error } = await supabase.from('assignments').select('*').order('created_at', { ascending: false });
 
@@ -162,9 +163,21 @@ router.get('/assignments', optionalAuth, async (req: AuthenticatedRequest, res: 
     }
 
     let filtered = data || [];
-    if (classSubjectId) filtered = filtered.filter((r: any) => String(r.class_subject_id) === String(classSubjectId));
-    if (sectionId) filtered = filtered.filter((r: any) => String(r.section_id) === String(sectionId));
-    if (classId) filtered = filtered.filter((r: any) => String(r.class_id) === String(classId));
+    if (classSubjectId) {
+      filtered = filtered.filter((r: any) => {
+        if (r.class_subject_id && String(r.class_subject_id) === String(classSubjectId)) return true;
+        // Fallback matching by subject and class
+        if (subject && r.subject && String(r.subject).trim().toLowerCase() === String(subject).trim().toLowerCase()) {
+          if (!classId || !r.class_id || String(r.class_id) === String(classId)) return true;
+        }
+        return false;
+      });
+    } else {
+      if (sectionId) filtered = filtered.filter((r: any) => String(r.section_id) === String(sectionId));
+      if (classId) filtered = filtered.filter((r: any) => String(r.class_id) === String(classId));
+      if (subject) filtered = filtered.filter((r: any) => String(r.subject || '').trim().toLowerCase() === String(subject).trim().toLowerCase());
+      if (className) filtered = filtered.filter((r: any) => String(r.class_name || '').trim().toLowerCase().includes(String(className).trim().toLowerCase()));
+    }
 
     const assignments = filtered.map((r: any) => ({
       id: r.id,

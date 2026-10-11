@@ -36,6 +36,7 @@ export default function ScanGrade({
 
   // Bulk mode: same form, but accepts many scripts at once and grades them as one batch job
   const [isBulkMode, setIsBulkMode] = useState(false);
+  const [bulkUploadMode, setBulkUploadMode] = useState<'single_per_student' | 'combined_pdf'>('single_per_student');
   const [bulkJobId, setBulkJobId] = useState<string | null>(null);
   const [batchJob, setBatchJob] = useState<any>(null);
 
@@ -76,7 +77,11 @@ export default function ScanGrade({
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      setFiles(Array.from(e.target.files));
+      const filesArray = Array.from(e.target.files);
+      setFiles(filesArray);
+      if (filesArray.length > 1) {
+        setBulkUploadMode('single_per_student');
+      }
     }
   };
 
@@ -134,6 +139,8 @@ export default function ScanGrade({
         formData.append('className', selectedAssignment?.className || subject);
         formData.append('subject', subject);
         formData.append('markingScheme', markingScheme);
+        formData.append('bulkMode', bulkUploadMode);
+        formData.append('autoSplitPdf', bulkUploadMode === 'combined_pdf' ? 'true' : 'false');
 
         const res = await fetch(`${API_BASE_URL}/api/submissions/bulk`, {
           method: 'POST',
@@ -373,9 +380,80 @@ export default function ScanGrade({
             </div>
 
             {isBulkMode && (
-              <p style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.5rem' }}>
-                Bulk mode: attach one scan per student — each student's name is transcribed individually from their script.
-              </p>
+              <div className="form-group" style={{ marginTop: '1rem' }}>
+                <label className="form-label" style={{ fontWeight: 600, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Layers className="size-4 text-blue-600" />
+                  <span>Batch Upload Organization Mode</span>
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                  
+                  {/* Option 1: Single PDF per Student */}
+                  <div
+                    onClick={() => setBulkUploadMode('single_per_student')}
+                    style={{
+                      border: bulkUploadMode === 'single_per_student' ? '2px solid #2563EB' : '1px solid #E2E8F0',
+                      background: bulkUploadMode === 'single_per_student' ? '#EFF6FF' : '#FFFFFF',
+                      borderRadius: '0.625rem',
+                      padding: '0.75rem 0.875rem',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                      boxShadow: bulkUploadMode === 'single_per_student' ? '0 1px 3px rgba(37, 99, 235, 0.15)' : 'none'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <input
+                          type="radio"
+                          name="scanBulkMode"
+                          checked={bulkUploadMode === 'single_per_student'}
+                          onChange={() => setBulkUploadMode('single_per_student')}
+                          style={{ cursor: 'pointer', accentColor: '#2563EB' }}
+                        />
+                        <span style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#1E293B' }}>Single PDF per Student</span>
+                      </div>
+                      <span style={{ fontSize: '0.625rem', fontWeight: 700, padding: '0.125rem 0.4rem', borderRadius: '9999px', background: '#DBEAFE', color: '#1E40AF', textTransform: 'uppercase' }}>
+                        Recommended
+                      </span>
+                    </div>
+                    <p style={{ margin: 0, fontSize: '0.75rem', color: '#64748B', lineHeight: 1.35, paddingLeft: '1.25rem' }}>
+                      Each file is 1 student's answer sheet. Evaluates directly without boundary checks or splitting.
+                    </p>
+                  </div>
+
+                  {/* Option 2: Multiple Students in 1 PDF */}
+                  <div
+                    onClick={() => setBulkUploadMode('combined_pdf')}
+                    style={{
+                      border: bulkUploadMode === 'combined_pdf' ? '2px solid #16A34A' : '1px solid #E2E8F0',
+                      background: bulkUploadMode === 'combined_pdf' ? '#F0FDF4' : '#FFFFFF',
+                      borderRadius: '0.625rem',
+                      padding: '0.75rem 0.875rem',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                      boxShadow: bulkUploadMode === 'combined_pdf' ? '0 1px 3px rgba(22, 163, 74, 0.15)' : 'none'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <input
+                          type="radio"
+                          name="scanBulkMode"
+                          checked={bulkUploadMode === 'combined_pdf'}
+                          onChange={() => setBulkUploadMode('combined_pdf')}
+                          style={{ cursor: 'pointer', accentColor: '#16A34A' }}
+                        />
+                        <span style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#1E293B' }}>Multiple Students in 1 PDF</span>
+                      </div>
+                      <span style={{ fontSize: '0.625rem', fontWeight: 700, padding: '0.125rem 0.4rem', borderRadius: '9999px', background: '#DCFCE7', color: '#15803D', textTransform: 'uppercase' }}>
+                        AI Splitter
+                      </span>
+                    </div>
+                    <p style={{ margin: 0, fontSize: '0.75rem', color: '#64748B', lineHeight: 1.35, paddingLeft: '1.25rem' }}>
+                      Combined master scan. AI detects student names & roll numbers to segregate pages.
+                    </p>
+                  </div>
+                </div>
+              </div>
             )}
 
             {/* Marking Scheme */}
