@@ -37,6 +37,17 @@ export default function Classes() {
     return `${validYear}-${String((validYear + 1) % 100).padStart(2, '0')}`;
   };
 
+  const getSectionLabel = (cls: ClassItem) => {
+    if (typeof cls.section === 'string' && cls.section.trim()) return cls.section.trim();
+    if (Array.isArray(cls.sections) && cls.sections.length > 0) {
+      return cls.sections.map((s) => s.section_name).filter(Boolean).join(', ');
+    }
+    if (Array.isArray(cls.section) && (cls.section as any[]).length > 0) {
+      return (cls.section as any[]).map((s) => s?.section_name || s?.name || '').filter(Boolean).join(', ');
+    }
+    return null;
+  };
+
   const handleCreateClass = async () => {
     const name = newClassName.trim();
     const section = newSection.trim();
@@ -127,7 +138,9 @@ export default function Classes() {
                   <span className="entity-card-pill">Class</span>
                 </div>
 
-                <h3 className="entity-card-title">{cls.section ? `${cls.name} - Section ${cls.section}` : cls.name}</h3>
+                <h3 className="entity-card-title">
+                  {getSectionLabel(cls) ? `${cls.name} - Section ${getSectionLabel(cls)}` : cls.name}
+                </h3>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.2rem' }}>
                   <p className="entity-card-subtitle" style={{ margin: 0 }}>{getAcademicYear(cls.createdAt)}</p>
                   {cls.sections && cls.sections.length > 0 && (

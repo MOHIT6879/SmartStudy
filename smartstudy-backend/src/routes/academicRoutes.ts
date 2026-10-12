@@ -91,24 +91,32 @@ router.delete('/academic-years/:id', optionalAuth, async (req: AuthenticatedRequ
 
 router.get('/classes', optionalAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    let query = supabase.from('classes').select('*, section(*), class_subjects(*)').order('name');
+    let query = supabase.from('classes').select('*, sections:section(*), class_subjects(*)').order('name');
     const branchId = (req.query.branchId as string) || req.branchId;
     if (branchId) query = query.eq('branch_id', branchId);
 
     const { data, error } = await query;
     if (error) throw error;
 
-    const classes = (data || []).map((c: any) => ({
-      id: c.id,
-      name: c.name,
-      section: c.section || null,
-      branchId: c.branch_id || null,
-      academicYearId: c.academic_year_id || null,
-      classOrder: c.class_order || null,
-      sections: c.section || [],
-      classSubjects: c.class_subjects || [],
-      createdAt: c.created_at
-    }));
+    const classes = (data || []).map((c: any) => {
+      const sectionsList = Array.isArray(c.sections) ? c.sections : (Array.isArray(c.section) ? c.section : []);
+      let sectionStr = typeof c.section === 'string' && c.section.trim() ? c.section.trim() : null;
+      if (!sectionStr && sectionsList.length > 0) {
+        sectionStr = sectionsList.map((s: any) => s.section_name || s.name).filter(Boolean).join(', ');
+      }
+
+      return {
+        id: c.id,
+        name: c.name,
+        section: sectionStr || null,
+        branchId: c.branch_id || null,
+        academicYearId: c.academic_year_id || null,
+        classOrder: c.class_order || null,
+        sections: sectionsList,
+        classSubjects: c.class_subjects || [],
+        createdAt: c.created_at
+      };
+    });
 
     res.json({ success: true, classes });
   } catch (err: any) {
@@ -181,11 +189,20 @@ router.get('/classes/:classId', optionalAuth, async (req: AuthenticatedRequest, 
     const { classId } = req.params;
     const { data: cls, error } = await supabase
       .from('classes')
-      .select('*, section(*, teacher:class_teacher_id(*)), class_subjects(*), branches(*)')
+      .select('*, sections:section(*, teacher:class_teacher_id(*)), class_subjects(*), branches(*)')
       .eq('id', classId)
       .single();
 
     if (error) throw error;
+    if (cls) {
+      const sectionsList = Array.isArray(cls.sections) ? cls.sections : (Array.isArray(cls.section) ? cls.section : []);
+      let sectionStr = typeof cls.section === 'string' && cls.section.trim() ? cls.section.trim() : null;
+      if (!sectionStr && sectionsList.length > 0) {
+        sectionStr = sectionsList.map((s: any) => s.section_name || s.name).filter(Boolean).join(', ');
+      }
+      cls.section = sectionStr || null;
+      cls.sections = sectionsList;
+    }
     res.json({ success: true, class: cls });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err?.message || 'Error fetching class details' });

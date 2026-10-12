@@ -205,9 +205,16 @@ export default function StudentsRoster() {
                   style={{ maxWidth: '200px' }}
                 >
                   <option value="ALL">All Classes</option>
-                  {classes.map(c => (
-                    <option key={c.id} value={c.id}>{c.name} {c.section ? `(${c.section})` : ''}</option>
-                  ))}
+                  {classes.map(c => {
+                    const sec = typeof c.section === 'string' && c.section.trim()
+                      ? c.section.trim()
+                      : Array.isArray(c.sections) && c.sections.length > 0
+                      ? c.sections.map((s: any) => s.section_name).filter(Boolean).join(', ')
+                      : '';
+                    return (
+                      <option key={c.id} value={c.id}>{c.name} {sec ? `(${sec})` : ''}</option>
+                    );
+                  })}
                 </select>
               )}
             </div>

@@ -60,7 +60,14 @@ export default function ClassDetail() {
       .then((data) => {
         if (data.success && Array.isArray(data.classes)) {
           const match = data.classes.find((c: any) => c.id === classId);
-          if (match) setClassName(match.section ? `${match.name} - ${match.section}` : match.name);
+          if (match) {
+            const secStr = typeof match.section === 'string' && match.section.trim()
+              ? match.section.trim()
+              : Array.isArray(match.sections) && match.sections.length > 0
+              ? match.sections.map((s: any) => s.section_name).filter(Boolean).join(', ')
+              : '';
+            setClassName(secStr ? `${match.name} - ${secStr}` : match.name);
+          }
         }
       })
       .catch(() => {});
