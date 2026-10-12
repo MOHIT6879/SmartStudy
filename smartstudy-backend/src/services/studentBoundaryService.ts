@@ -546,8 +546,9 @@ export async function detectAndSplitStudentSubmissions(
 
   let processedCount = 0;
 
-  // Process header batches using a concurrency pool of 3 workers
-  const batchClassifications = await runWithConcurrency(pageBatches, 3, async (batchPages) => {
+  // Process header batches using a concurrency pool (default 2 for memory stability)
+  const splitConcurrency = Math.max(1, parseInt(process.env.SPLIT_CONCURRENCY || '2', 10));
+  const batchClassifications = await runWithConcurrency(pageBatches, splitConcurrency, async (batchPages) => {
     // Render full-page 0.65x thumbnails to capture rotated/sideways pages
     const headers = await rasterizePdfHeaders(pdfBuffer, batchPages, 0.65, 1.0);
     // Classify all headers in this batch in 1 Gemini call
