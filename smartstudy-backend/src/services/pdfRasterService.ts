@@ -22,11 +22,7 @@ export function isPdf(mimeType?: string, fileName?: string): boolean {
  * Renders every page of a PDF to a PNG buffer so downstream OCR, storage and the
  * review UI only ever deal with images.
  */
-export async function rasterizePdf(
-  buffer: Buffer,
-  scale = parseFloat(process.env.RASTER_SCALE || '1.3'),
-  maxPages = 1000
-): Promise<RasterPage[]> {
+export async function rasterizePdf(buffer: Buffer, scale = 2, maxPages = 1000): Promise<RasterPage[]> {
   const pdfjs = await loadPdfjs();
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(buffer),
@@ -160,7 +156,7 @@ export async function rasterizePdfPageRange(
  */
 export async function expandPdfFilesToImages<T extends { buffer: Buffer; mimetype?: string; originalname?: string }>(
   files: T[],
-  scale = parseFloat(process.env.RASTER_SCALE || '1.3')
+  scale = 2
 ): Promise<T[]> {
   const expanded: T[] = [];
   for (const file of files) {

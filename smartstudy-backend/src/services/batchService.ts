@@ -346,9 +346,8 @@ async function processBatchQueue(
     }
   }
 
-  // Parallel Worker Pool: process student evaluations concurrently (default 2 to prevent OOM on 512MB RAM hosts)
-  const batchConcurrency = Math.max(1, parseInt(process.env.BATCH_CONCURRENCY || '2', 10));
-  await runWithConcurrency(studentEntries, batchConcurrency, async ([rawStudentName, pageFiles], idx) => {
+  // Parallel Worker Pool: process 6 student evaluations concurrently
+  await runWithConcurrency(studentEntries, 6, async ([rawStudentName, pageFiles], idx) => {
     let studentName = formatStudentDisplayName(rawStudentName);
     let matchedStudentId: string | null = null;
 
