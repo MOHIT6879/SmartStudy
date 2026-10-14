@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, FileText, FileStack, Send, Plus, Upload, X, CheckCircle2, ChevronRight, Sparkles, Edit3 } from 'lucide-react';
+import { ArrowLeft, FileText, FileStack, Send, Plus, Upload, X, CheckCircle2, ChevronRight, Sparkles, Edit3, Trash2 } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
 import ReviewQueue from './ReviewQueue';
 
@@ -246,6 +246,42 @@ export default function SubjectWorkspace() {
     }
   };
 
+  const [deletingPaperId, setDeletingPaperId] = useState<string | null>(null);
+
+  const handleDeletePaper = async (paperId: string, paperTitle: string) => {
+    const displayTitle = (paperTitle || '').trim() || 'this question paper';
+    if (!window.confirm(`Are you sure you want to delete "${displayTitle}"? This will remove the question paper.`)) {
+      return;
+    }
+
+    setDeletingPaperId(paperId);
+    try {
+      try {
+        const existingRaw = localStorage.getItem('smartstudy_saved_exam_papers');
+        if (existingRaw) {
+          const existing = JSON.parse(existingRaw);
+          const updated = existing.filter((p: any) => p.id !== paperId);
+          localStorage.setItem('smartstudy_saved_exam_papers', JSON.stringify(updated));
+        }
+      } catch (e) {}
+
+      const res = await fetch(`${API_BASE_URL}/api/assignments/${paperId}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && (data.success !== false)) {
+        setAssignments((prev) => prev.filter((a) => a.id !== paperId));
+      } else {
+        alert(data.message || 'Failed to delete question paper.');
+      }
+    } catch (err: any) {
+      console.error('Delete paper error:', err);
+      alert('Error deleting question paper: ' + (err.message || 'Network error'));
+    } finally {
+      setDeletingPaperId(null);
+    }
+  };
+
   return (
     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
       <header className="page-top-bar no-print">
@@ -480,6 +516,26 @@ export default function SubjectWorkspace() {
                           >
                             <span>Open & Grade</span>
                             <ChevronRight className="size-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
+                            title="Delete question paper"
+                            onClick={() => handleDeletePaper(a.id, a.title)}
+                            disabled={deletingPaperId === a.id}
+                            style={{
+                              padding: '0.35rem 0.55rem',
+                              fontSize: '0.75rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.25rem',
+                              borderColor: '#FECDD3',
+                              color: '#E11D48',
+                              background: '#FFF1F2'
+                            }}
+                          >
+                            <Trash2 className="size-3 text-rose-600" />
+                            <span>{deletingPaperId === a.id ? 'Deleting…' : 'Delete'}</span>
                           </button>
                         </div>
                       </div>

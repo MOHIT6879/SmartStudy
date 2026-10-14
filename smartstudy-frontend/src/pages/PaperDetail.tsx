@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ScanLine, FileStack, ChevronRight, FileText } from 'lucide-react';
+import { ArrowLeft, ScanLine, FileStack, ChevronRight, FileText, Trash2 } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
 import ScanGrade from './ScanGrade';
 
@@ -16,6 +16,7 @@ export default function PaperDetail() {
   const [activeTab, setActiveTab] = useState<Tab>('results');
   const [assignment, setAssignment] = useState<any>(null);
   const [submissions, setSubmissions] = useState<any[]>([]);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (!assignmentId) return;
@@ -49,6 +50,37 @@ export default function PaperDetail() {
 
   const backUrl = classId && classSubjectId ? `/classes/${classId}/${classSubjectId}` : '/classes';
 
+  const handleDelete = async () => {
+    const title = assignment?.title || 'this question paper';
+    if (!window.confirm(`Are you sure you want to delete "${title}"? This action cannot be undone.`)) {
+      return;
+    }
+    setIsDeleting(true);
+    try {
+      try {
+        const existingRaw = localStorage.getItem('smartstudy_saved_exam_papers');
+        if (existingRaw) {
+          const existing = JSON.parse(existingRaw);
+          const updated = existing.filter((p: any) => p.id !== assignmentId);
+          localStorage.setItem('smartstudy_saved_exam_papers', JSON.stringify(updated));
+        }
+      } catch (e) {}
+
+      const res = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success !== false) {
+        navigate(backUrl);
+      } else {
+        alert(data.message || 'Failed to delete paper.');
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert('Error deleting paper: ' + (err.message || 'Network error'));
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   return (
     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
       <header className="page-top-bar no-print">
@@ -61,6 +93,25 @@ export default function PaperDetail() {
           <p>
             {assignment ? `${(assignment.questions || []).length} question(s) · ${assignment.answerKeyText ? 'Answer key attached' : 'No answer key'}` : 'Loading paper details…'}
           </p>
+        </div>
+        <div className="page-top-bar-actions">
+          <button
+            type="button"
+            className="btn btn-outline btn-sm"
+            onClick={handleDelete}
+            disabled={isDeleting}
+            style={{
+              borderColor: '#FECDD3',
+              color: '#E11D48',
+              background: '#FFF1F2',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.35rem'
+            }}
+          >
+            <Trash2 className="size-4 text-rose-600" />
+            <span>{isDeleting ? 'Deleting…' : 'Delete Paper'}</span>
+          </button>
         </div>
       </header>
 
