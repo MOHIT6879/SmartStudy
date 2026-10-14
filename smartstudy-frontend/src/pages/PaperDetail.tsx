@@ -81,6 +81,25 @@ export default function PaperDetail() {
     }
   };
 
+  const handleDeleteSubmission = async (e: React.MouseEvent, subId: string, studentName?: string) => {
+    e.stopPropagation();
+    const name = studentName || 'this student submission';
+    if (!window.confirm(`Are you sure you want to permanently delete the submission for "${name}"? This action cannot be undone.`)) {
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/submissions/${subId}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success !== false) {
+        setSubmissions((prev) => prev.filter((s) => s.id !== subId));
+      } else {
+        alert(data.message || 'Failed to delete submission.');
+      }
+    } catch (err: any) {
+      alert('Error deleting submission: ' + (err.message || 'Network error'));
+    }
+  };
+
   return (
     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
       <header className="page-top-bar no-print">
@@ -156,11 +175,22 @@ export default function PaperDetail() {
                   const maxScore = sub.maxScore || sub.aiEvaluation?.maxScore || 0;
                   const isApproved = sub.status === 'approved';
                   return (
-                    <button
+                    <div
                       key={sub.id}
                       onClick={() => navigate(`/review/${sub.id}`)}
                       className="submission-row-card"
-                      style={{ width: '100%', border: '1px solid #E2E8F0', cursor: 'pointer', textAlign: 'left' }}
+                      style={{
+                        width: '100%',
+                        border: '1px solid #E2E8F0',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '1rem',
+                        borderRadius: '0.625rem',
+                        background: '#FFFFFF'
+                      }}
                     >
                       <div>
                         <div style={{ fontWeight: 700, fontSize: '1rem', color: '#111827' }}>
@@ -170,7 +200,7 @@ export default function PaperDetail() {
                           Submitted {sub.submittedAt ? new Date(sub.submittedAt).toLocaleString() : 'recently'}
                         </div>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
                         <div style={{ fontWeight: 800, fontSize: '1rem', color: '#111827' }}>
                           {scoreVal}/{maxScore} marks
                         </div>
@@ -179,9 +209,31 @@ export default function PaperDetail() {
                         ) : (
                           <span className="badge badge-amber">Needs review</span>
                         )}
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteSubmission(e, sub.id, sub.studentName || sub.student_name)}
+                          title="Delete submission"
+                          style={{
+                            border: '1px solid #FECDD3',
+                            background: '#FFF1F2',
+                            color: '#E11D48',
+                            borderRadius: '0.375rem',
+                            padding: '0.35rem 0.5rem',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.25rem',
+                            fontSize: '0.75rem',
+                            fontWeight: 600,
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          <Trash2 className="size-3.5" />
+                          <span>Delete</span>
+                        </button>
                         <ChevronRight className="size-4 text-slate-400" />
                       </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>

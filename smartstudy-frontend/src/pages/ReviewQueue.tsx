@@ -5,7 +5,8 @@ import {
   Download, 
   ScanLine, 
   Search, 
-  ChevronRight
+  ChevronRight,
+  Trash2
 } from 'lucide-react';
 import { API_BASE_URL } from '../config/api';
 
@@ -31,6 +32,26 @@ export default function ReviewQueue({ onScanScript }: { onScanScript?: () => voi
       }
     } catch (err) {
       console.error('Fetch queue error:', err);
+    }
+  };
+
+  const handleDeleteSubmission = async (e: React.MouseEvent, subId: string, studentName?: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const name = studentName || 'this student submission';
+    if (!window.confirm(`Are you sure you want to permanently delete the submission for "${name}"? This action cannot be undone.`)) {
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/submissions/${subId}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success !== false) {
+        setSubmissions((prev) => prev.filter((s) => s.id !== subId));
+      } else {
+        alert(data.message || 'Failed to delete submission.');
+      }
+    } catch (err: any) {
+      alert('Error deleting submission: ' + (err.message || 'Network error'));
     }
   };
 
@@ -232,6 +253,29 @@ export default function ReviewQueue({ onScanScript }: { onScanScript?: () => voi
                       ) : (
                         <span className="badge badge-amber">Needs review</span>
                       )}
+
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteSubmission(e, sub.id, sub.studentName || sub.student_name)}
+                        title="Delete submission"
+                        style={{
+                          border: '1px solid #FECDD3',
+                          background: '#FFF1F2',
+                          color: '#E11D48',
+                          borderRadius: '0.375rem',
+                          padding: '0.35rem 0.5rem',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '0.25rem',
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <Trash2 className="size-3.5" />
+                        <span>Delete</span>
+                      </button>
 
                       <ChevronRight className="size-4 text-slate-400" />
                     </div>

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { 
   ArrowLeft, AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronRight, 
-  FileText, Maximize2, Minus, Plus, RefreshCw, Sparkles, MessageSquare, User, XCircle
+  FileText, Maximize2, Minus, Plus, RefreshCw, Sparkles, MessageSquare, User, XCircle, Trash2
 } from 'lucide-react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../config/api';
 
 type ReviewQuestion = {
@@ -32,6 +32,7 @@ const getQuestionState = (scorePercent: number) => {
 
 export default function ReviewSubmission() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [submission, setSubmission] = useState<any>(null);
   const [questions, setQuestions] = useState<ReviewQuestion[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -41,7 +42,30 @@ export default function ReviewSubmission() {
   const [studentZoom, setStudentZoom] = useState(1);
   const [loading, setLoading] = useState(true);
   const [approved, setApproved] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [questionFilter, setQuestionFilter] = useState<'All Questions' | 'Needs Review' | 'Full Credit'>('All Questions');
+
+  const handleDeleteSubmission = async () => {
+    if (!submission) return;
+    const name = submission.studentName || 'this student submission';
+    if (!window.confirm(`Are you sure you want to permanently delete the submission for "${name}"? This action cannot be undone.`)) {
+      return;
+    }
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/submissions/${submission.id}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success !== false) {
+        navigate(-1);
+      } else {
+        alert(data.message || 'Failed to delete submission.');
+        setIsDeleting(false);
+      }
+    } catch (err: any) {
+      alert('Error deleting submission: ' + (err.message || 'Network error'));
+      setIsDeleting(false);
+    }
+  };
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/api/submissions`).then((res) => res.json()).then((data) => {
@@ -201,6 +225,28 @@ export default function ReviewSubmission() {
               <span className="circle-text">{totalPercent}%</span>
             </div>
           </div>
+
+          <button
+            type="button"
+            className="btn btn-outline btn-sm"
+            onClick={handleDeleteSubmission}
+            disabled={isDeleting}
+            style={{
+              borderColor: '#FECDD3',
+              color: '#E11D48',
+              background: '#FFF1F2',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.35rem',
+              padding: '0.5rem 0.75rem',
+              borderRadius: '0.5rem',
+              fontWeight: 600,
+              cursor: 'pointer'
+            }}
+          >
+            <Trash2 size={16} />
+            <span>{isDeleting ? 'Deleting…' : 'Delete'}</span>
+          </button>
 
           <button className="btn-approve-primary" onClick={approve} disabled={approved}>
             <Check size={16} />
